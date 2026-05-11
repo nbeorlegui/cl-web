@@ -1,65 +1,219 @@
-import Image from "next/image";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
+import FeaturedProperties from "@/components/public/FeaturedProperties";
+import DalvianSection from "@/components/public/DalvianSection";
+import Footer from "@/components/public/Footer";
+import HomeHero from "@/components/public/HomeHero";
+import PublicHeader from "@/components/public/PublicHeader";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+type PropertyImage = {
+  url: string | null;
+  is_cover: boolean | null;
+  position: number | null;
+};
+
+type PropertyRow = {
+  id: string;
+  title: string | null;
+  slug: string | null;
+  city: string | null;
+  province: string | null;
+  neighborhood: string | null;
+  price: number | null;
+  currency: string | null;
+  operation: string | null;
+  property_type: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  total_area: number | null;
+  covered_area: number | null;
+  featured: boolean | null;
+  is_dalvian: boolean | null;
+  property_images?: PropertyImage[] | null;
+};
+
+export type PublicProperty = {
+  id: string;
+  title: string;
+  slug: string;
+  city: string | null;
+  province: string | null;
+  neighborhood: string | null;
+  price: number | null;
+  currency: string | null;
+  operation: string | null;
+  property_type: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  total_area: number | null;
+  covered_area: number | null;
+  cover_url: string | null;
+};
+
+function normalizeProperty(property: PropertyRow): PublicProperty {
+  const images = property.property_images || [];
+
+  const cover =
+    images.find((image) => image.is_cover)?.url ||
+    [...images].sort((a, b) => (a.position || 0) - (b.position || 0))[0]?.url ||
+    null;
+
+  return {
+    id: property.id,
+    title: property.title || "Propiedad sin título",
+    slug: property.slug || property.id,
+    city: property.city,
+    province: property.province,
+    neighborhood: property.neighborhood,
+    price: property.price,
+    currency: property.currency,
+    operation: property.operation,
+    property_type: property.property_type,
+    bedrooms: property.bedrooms,
+    bathrooms: property.bathrooms,
+    total_area: property.total_area,
+    covered_area: property.covered_area,
+    cover_url: cover,
+  };
+}
+
+async function getPublicHomeData() {
+  const supabase = await createSupabaseServerClient();
+
+  const selectFields = `
+    id,
+    title,
+    slug,
+    city,
+    province,
+    neighborhood,
+    price,
+    currency,
+    operation,
+    property_type,
+    bedrooms,
+    bathrooms,
+    total_area,
+    covered_area,
+    featured,
+    is_dalvian,
+    property_images (
+      url,
+      is_cover,
+      position
+    )
+  `;
+
+  const [featuredResult, dalvianResult, latestResult] = await Promise.all([
+    supabase
+      .from("properties")
+      .select(selectFields)
+      .eq("published", true)
+      .eq("featured", true)
+      .order("created_at", { ascending: false })
+      .limit(6),
+
+    supabase
+      .from("properties")
+      .select(selectFields)
+      .eq("published", true)
+      .eq("is_dalvian", true)
+      .order("created_at", { ascending: false })
+      .limit(6),
+
+    supabase
+      .from("properties")
+      .select(selectFields)
+      .eq("published", true)
+      .order("created_at", { ascending: false })
+      .limit(9),
+  ]);
+
+  if (featuredResult.error) {
+    console.error("Error loading featured properties:", featuredResult.error);
+  }
+
+  if (dalvianResult.error) {
+    console.error("Error loading Dalvian properties:", dalvianResult.error);
+  }
+
+  if (latestResult.error) {
+    console.error("Error loading latest properties:", latestResult.error);
+  }
+
+  return {
+    featured: ((featuredResult.data || []) as PropertyRow[]).map(
+      normalizeProperty
+    ),
+    dalvian: ((dalvianResult.data || []) as PropertyRow[]).map(
+      normalizeProperty
+    ),
+    latest: ((latestResult.data || []) as PropertyRow[]).map(normalizeProperty),
+  };
+}
+
+export default async function HomePage() {
+  const { featured, dalvian, latest } = await getPublicHomeData();
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="min-h-screen bg-white text-[#111111]">
+      <PublicHeader />
+
+      <HomeHero />
+
+      <FeaturedProperties properties={featured} />
+
+      <DalvianSection properties={dalvian} />
+
+      <FeaturedProperties
+        eyebrow="Últimas publicaciones"
+        title="Nuevas oportunidades"
+        description="Propiedades recientemente cargadas en nuestra cartera."
+        properties={latest}
+        variant="latest"
+      />
+
+      <section id="contacto" className="mx-auto max-w-6xl px-6 py-16">
+        <div className="overflow-hidden rounded-[2rem] bg-[#111111] p-8 text-white shadow-xl md:p-12">
+          <div className="grid gap-8 md:grid-cols-[1.3fr_0.7fr] md:items-center">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-[#D71920]">
+                Contacto directo
+              </p>
+
+              <h2 className="mt-3 text-3xl font-semibold md:text-5xl">
+                ¿Querés coordinar una visita o tasar tu propiedad?
+              </h2>
+
+              <p className="mt-4 max-w-2xl text-white/70">
+                Escribinos y te ayudamos a encontrar la mejor opción según tu
+                presupuesto, zona y objetivo de inversión.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3 md:items-end">
+              <a
+                href="https://wa.me/5492610000000"
+                target="_blank"
+                rel="noreferrer"
+                className="w-full rounded-2xl bg-[#D71920] px-6 py-4 text-center font-semibold text-white transition hover:bg-[#B9151B] md:w-auto"
+              >
+                Contactar por WhatsApp
+              </a>
+
+              <a
+                href="/dashboard"
+                className="w-full rounded-2xl border border-white/15 px-6 py-4 text-center font-bold text-white/85 transition hover:bg-white/10 md:w-auto"
+              >
+                Acceso dashboard
+              </a>
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </section>
+
+      <Footer />
+    </main>
   );
 }

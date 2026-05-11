@@ -1,26 +1,100 @@
 @import "tailwindcss";
 
+/* ================================
+   ESCALA GLOBAL CL INMOBILIARIA
+   Achica toda la app de forma pareja
+================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --cl-red: #d71920;
+  --cl-black: #111111;
+  --cl-bg: #f5f6f8;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+html {
+  font-size: 13px;
+  scroll-behavior: smooth;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@media (max-width: 768px) {
+  html {
+    font-size: 14px;
   }
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  font-family: "Montserrat", sans-serif;
+  color: var(--cl-black);
+  background: #ffffff;
+}
+
+/* Títulos menos pesados */
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+a:not([class]) {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Botones */
+button,
+a {
+  font-weight: 700;
+}
+
+/* Inputs compactos */
+input,
+select,
+textarea {
+  font-size: 0.9rem;
+  color: #111111;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #64748b;
+  opacity: 1;
+}
+
+/* Tablas más compactas en dashboard */
+table th {
+  font-size: 0.7rem;
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+}
+
+table td {
+  font-size: 0.82rem;
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
