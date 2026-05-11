@@ -30,6 +30,7 @@ type PropertyRow = {
   covered_area: number | null;
   featured: boolean | null;
   is_dalvian: boolean | null;
+  apt_credit: boolean | null;
   property_images?: PropertyImage[] | null;
 };
 
@@ -49,6 +50,7 @@ export type PublicProperty = {
   total_area: number | null;
   covered_area: number | null;
   cover_url: string | null;
+  apt_credit: boolean | null;
 };
 
 function normalizeProperty(property: PropertyRow): PublicProperty {
@@ -75,6 +77,7 @@ function normalizeProperty(property: PropertyRow): PublicProperty {
     total_area: property.total_area,
     covered_area: property.covered_area,
     cover_url: cover,
+    apt_credit: property.apt_credit,
   };
 }
 
@@ -98,6 +101,7 @@ async function getPublicHomeData() {
     covered_area,
     featured,
     is_dalvian,
+    apt_credit,
     property_images (
       url,
       is_cover,
