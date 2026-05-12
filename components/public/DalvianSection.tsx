@@ -4,128 +4,248 @@ import Image from "next/image";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-type Property = {
+type PublicProperty = {
   id: string;
-  slug: string;
   title: string;
-  operation: string | null;
-  property_type: string | null;
+  slug: string;
+  city: string | null;
+  province?: string | null;
+  neighborhood: string | null;
   price: number | null;
   currency: string | null;
-  city: string | null;
-  province: string | null;
-  neighborhood: string | null;
+  operation: string | null;
+  property_type: string | null;
   bedrooms: number | null;
   bathrooms: number | null;
   covered_area: number | null;
   total_area: number | null;
   cover_url: string | null;
+  apt_credit?: boolean | null;
 };
 
 type DalvianSectionProps = {
-  properties: Property[];
+  properties: PublicProperty[];
 };
 
-function formatPrice(price: number | null, currency: string | null) {
-  if (!price) return "Consultar";
-
-  const code = currency === "ARS" ? "ARS" : "USD";
+function formatPrice(value: number | null) {
+  if (!value) return "-";
 
   return new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency: code,
     maximumFractionDigits: 0,
-  }).format(price);
+  }).format(value);
 }
 
-function getLocation(property: Property) {
-  return [property.neighborhood, property.city, property.province]
+function formatOperation(value: string | null) {
+  if (!value) return "Venta";
+
+  const clean = value.toLowerCase();
+
+  if (clean === "venta") return "Venta";
+  if (clean === "alquiler") return "Alquiler";
+
+  return value;
+}
+
+function formatPropertyType(value: string | null) {
+  if (!value) return "Casa";
+
+  const clean = value.toLowerCase();
+
+  if (clean === "casa") return "Casa";
+  if (clean === "departamento") return "Departamento";
+  if (clean === "duplex") return "Dúplex";
+  if (clean === "lote") return "Lote";
+  if (clean === "terreno") return "Terreno";
+  if (clean === "local") return "Local";
+  if (clean === "finca") return "Finca";
+
+  return value;
+}
+
+function formatArea(value: number | null) {
+  if (!value) return "-";
+  return String(value);
+}
+
+function DalvianPropertyCard({ property }: { property: PublicProperty }) {
+  const location = [property.neighborhood, property.city]
     .filter(Boolean)
     .join(", ");
-}
 
-function chunkArray<T>(array: T[], size: number) {
-  const result: T[][] = [];
+  const detailUrl = property.slug
+    ? `/propiedades/${property.slug}`
+    : "/propiedades";
 
-  for (let i = 0; i < array.length; i += size) {
-    result.push(array.slice(i, i + size));
-  }
+  return (
+    <article className="group flex h-full min-h-[520px] flex-col overflow-hidden rounded-[28px] border border-white/30 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl">
+      <div className="relative h-[220px] overflow-hidden bg-white/20">
+        {property.cover_url ? (
+          <Image
+            src={property.cover_url}
+            alt={property.title || "Propiedad en Dalvian"}
+            fill
+            className="object-cover transition duration-500 group-hover:scale-[1.03]"
+            sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center bg-white/10">
+            <span className="text-xs font-bold uppercase tracking-[0.3em] text-white/70">
+              Sin imagen
+            </span>
+          </div>
+        )}
 
-  return result;
+        <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-wide text-[#D71920] shadow-sm">
+            {formatOperation(property.operation)}
+          </span>
+
+          <span className="rounded-full bg-[#D71920] px-4 py-2 text-xs font-bold uppercase tracking-wide text-white shadow-sm">
+            Dalvian
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col p-5">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <p className="text-xs font-bold uppercase tracking-[0.28em] text-[#D71920]">
+            {formatPropertyType(property.property_type)}
+          </p>
+
+          <span className="rounded-full bg-red-50 px-3 py-1 text-[11px] font-bold text-[#D71920]">
+            Especial
+          </span>
+        </div>
+
+        <h3 className="line-clamp-2 min-h-[50px] text-[20px] font-semibold leading-[1.15] tracking-[-0.03em] text-[#111111]">
+          {property.title || "Propiedad sin título"}
+        </h3>
+
+        <p className="mt-2 min-h-[22px] truncate text-sm font-medium text-slate-500">
+          {location || "Dalvian, Mendoza"}
+        </p>
+
+        <p className="mt-5 text-[23px] font-semibold leading-none tracking-[-0.04em] text-[#D71920]">
+          {property.currency || "USD"} {formatPrice(property.price)}
+        </p>
+
+        <div className="mt-5 grid grid-cols-4 gap-2">
+          <div className="flex h-[54px] flex-col items-center justify-center rounded-2xl bg-slate-50 px-1">
+            <strong className="text-sm font-semibold leading-none text-[#111111]">
+              {property.bedrooms || "-"}
+            </strong>
+            <span className="mt-1 text-[10px] font-semibold text-slate-500">
+              Dorm.
+            </span>
+          </div>
+
+          <div className="flex h-[54px] flex-col items-center justify-center rounded-2xl bg-slate-50 px-1">
+            <strong className="text-sm font-semibold leading-none text-[#111111]">
+              {property.bathrooms || "-"}
+            </strong>
+            <span className="mt-1 text-[10px] font-semibold text-slate-500">
+              Baños
+            </span>
+          </div>
+
+          <div className="flex h-[54px] flex-col items-center justify-center rounded-2xl bg-slate-50 px-1">
+            <strong className="text-sm font-semibold leading-none text-[#111111]">
+              {formatArea(property.covered_area)}
+            </strong>
+            <span className="mt-1 text-[10px] font-semibold text-slate-500">
+              Cub.
+            </span>
+          </div>
+
+          <div className="flex h-[54px] flex-col items-center justify-center rounded-2xl bg-slate-50 px-1">
+            <strong className="text-sm font-semibold leading-none text-[#111111]">
+              {formatArea(property.total_area)}
+            </strong>
+            <span className="mt-1 text-[10px] font-semibold text-slate-500">
+              Total
+            </span>
+          </div>
+        </div>
+
+        <Link
+          href={detailUrl}
+          className="mt-5 flex h-11 items-center justify-center rounded-2xl bg-[#111111] text-sm font-bold text-white transition hover:bg-[#D71920]"
+        >
+          Ver propiedad
+        </Link>
+      </div>
+    </article>
+  );
 }
 
 export default function DalvianSection({ properties }: DalvianSectionProps) {
-  const [page, setPage] = useState(0);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const pageSize = 3;
 
-  const pages = useMemo(() => {
-    return chunkArray(properties, 4);
-  }, [properties]);
+  const visibleProperties = useMemo(() => {
+    return properties.slice(carouselIndex, carouselIndex + pageSize);
+  }, [properties, carouselIndex]);
 
-  const hasCarousel = pages.length > 1;
+  function nextSlide() {
+    if (properties.length <= pageSize) return;
 
-  function prevPage() {
-    setPage((prev) => (prev === 0 ? pages.length - 1 : prev - 1));
+    setCarouselIndex((current) => {
+      const next = current + pageSize;
+      return next >= properties.length ? 0 : next;
+    });
   }
 
-  function nextPage() {
-    setPage((prev) => (prev === pages.length - 1 ? 0 : prev + 1));
+  function prevSlide() {
+    if (properties.length <= pageSize) return;
+
+    setCarouselIndex((current) => {
+      const prev = current - pageSize;
+
+      if (prev < 0) {
+        return Math.floor((properties.length - 1) / pageSize) * pageSize;
+      }
+
+      return prev;
+    });
   }
+
+  if (!properties.length) return null;
+
+  const canShowCarousel = properties.length > pageSize;
 
   return (
     <section
       id="dalvian"
-      className="relative overflow-hidden bg-[#D71920] py-8 text-white lg:py-10"
+      className="relative overflow-hidden bg-[#D71920] px-6 py-16 text-white md:px-10 lg:px-14"
     >
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-24 top-10 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
-        <div className="absolute -right-20 bottom-0 h-80 w-80 rounded-full bg-black/15 blur-3xl" />
-
-        <svg
-          viewBox="0 0 1400 500"
-          className="absolute inset-0 h-full w-full opacity-20"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d="M40 360C210 260 330 340 500 250C700 145 840 250 1020 170C1180 98 1280 110 1370 65"
-            stroke="white"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeDasharray="18 22"
-          />
-          <path
-            d="M80 95C230 185 360 145 520 210C710 287 820 375 1030 315C1190 270 1285 315 1360 390"
-            stroke="white"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeDasharray="16 20"
-          />
-        </svg>
+      <div className="pointer-events-none absolute inset-0 opacity-20">
+        <div className="absolute left-[12%] top-[38%] h-[2px] w-[1200px] rotate-12 border-t-2 border-dashed border-white" />
+        <div className="absolute left-[38%] top-[60%] h-[2px] w-[900px] -rotate-6 border-t-2 border-dashed border-white" />
       </div>
 
-      <div className="relative mx-auto max-w-[1500px] px-6 lg:px-10">
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="relative mx-auto max-w-[1450px]">
+        <div className="mb-8 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-4 py-2 backdrop-blur">
-              <span className="h-2.5 w-2.5 rounded-full bg-white" />
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2">
+              <span className="h-2 w-2 rounded-full bg-white" />
 
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white">
+              <p className="text-xs font-bold uppercase tracking-[0.28em] text-white">
                 Especial Dalvian
               </p>
             </div>
 
-            <h2 className="mt-4 text-4xl font-semibold leading-[0.95] text-white md:text-5xl">
+            <h2 className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-white md:text-5xl">
               Propiedades en Dalvian
             </h2>
           </div>
 
           <div className="flex items-center gap-3">
-            {hasCarousel && (
-              <div className="hidden items-center gap-2 md:flex">
+            {canShowCarousel && (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={prevPage}
-                  className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/25 bg-white/10 text-lg font-semibold text-white transition hover:bg-white hover:text-[#D71920]"
+                  onClick={prevSlide}
+                  className="flex h-11 w-11 items-center justify-center rounded-full border border-white/30 bg-white/10 text-lg font-bold text-white transition hover:bg-white hover:text-[#D71920]"
                   aria-label="Anterior"
                 >
                   ←
@@ -133,8 +253,8 @@ export default function DalvianSection({ properties }: DalvianSectionProps) {
 
                 <button
                   type="button"
-                  onClick={nextPage}
-                  className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/25 bg-white/10 text-lg font-semibold text-white transition hover:bg-white hover:text-[#D71920]"
+                  onClick={nextSlide}
+                  className="flex h-11 w-11 items-center justify-center rounded-full border border-white/30 bg-white/10 text-lg font-bold text-white transition hover:bg-white hover:text-[#D71920]"
                   aria-label="Siguiente"
                 >
                   →
@@ -144,170 +264,18 @@ export default function DalvianSection({ properties }: DalvianSectionProps) {
 
             <Link
               href="/propiedades?zona=dalvian"
-              className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-[#D71920] transition hover:bg-[#111111] hover:text-white"
+              className="inline-flex h-12 items-center justify-center rounded-2xl bg-white px-5 text-sm font-bold text-[#D71920] transition hover:bg-[#111111] hover:text-white"
             >
-              Ver Dalvian
-              <span aria-hidden>→</span>
+              Ver Dalvian →
             </Link>
           </div>
         </div>
 
-        {properties.length === 0 ? (
-          <div className="rounded-[28px] border border-white/20 bg-white/10 p-8 text-center backdrop-blur md:p-12">
-            <h3 className="text-2xl font-semibold text-white">
-              Todavía no hay propiedades Dalvian
-            </h3>
-
-            <p className="mx-auto mt-3 max-w-xl text-white/75">
-              Marcá el check “Dalvian” al cargar una propiedad para que aparezca
-              en esta sección.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="overflow-hidden py-2">
-              <div
-                className="flex transition-transform duration-500 ease-out"
-                style={{ transform: `translateX(-${page * 100}%)` }}
-              >
-                {pages.map((group, groupIndex) => (
-                  <div key={groupIndex} className="min-w-full">
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                      {group.map((property) => {
-                        const location = getLocation(property);
-
-                        return (
-                          <article
-                            key={property.id}
-                            className="group overflow-hidden rounded-[24px] border border-white/25 bg-white text-[#111111] transition duration-300 hover:-translate-y-1"
-                          >
-                            <div className="relative">
-                              <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
-                                <span className="rounded-full bg-white/95 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#D71920]">
-                                  {property.operation || "Venta"}
-                                </span>
-
-                                <span className="rounded-full bg-[#D71920] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                                  Dalvian
-                                </span>
-                              </div>
-
-                              <div className="relative h-[170px] overflow-hidden bg-slate-100">
-                                {property.cover_url ? (
-                                  <Image
-                                    src={property.cover_url}
-                                    alt={property.title}
-                                    fill
-                                    className="object-cover transition duration-500 group-hover:scale-105"
-                                  />
-                                ) : (
-                                  <div className="flex h-full items-center justify-center bg-slate-100 text-xs font-semibold uppercase tracking-[0.25em] text-slate-400">
-                                    Sin imagen
-                                  </div>
-                                )}
-
-                                <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/25 via-black/5 to-transparent" />
-                              </div>
-                            </div>
-
-                            <div className="p-4">
-                              <div className="mb-2 flex items-center justify-between gap-2">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#D71920]">
-                                  {property.property_type || "Propiedad"}
-                                </p>
-
-                                <div className="rounded-full bg-[#FFF5F5] px-2.5 py-1 text-[10px] font-bold text-[#D71920]">
-                                  Especial
-                                </div>
-                              </div>
-
-                              <h3 className="line-clamp-2 text-[1.15rem] font-semibold leading-tight text-[#111111]">
-                                {property.title}
-                              </h3>
-
-                              <p className="mt-2 min-h-[42px] text-sm leading-5 text-slate-600">
-                                {location || "Dalvian, Mendoza"}
-                              </p>
-
-                              <p className="mt-3 text-[1.6rem] font-semibold leading-none text-[#111111]">
-                                {formatPrice(property.price, property.currency)}
-                              </p>
-
-                              <div className="mt-4 grid grid-cols-4 gap-2">
-                                <div className="rounded-2xl bg-slate-50 px-2 py-2 text-center">
-                                  <p className="text-sm font-semibold text-[#111111]">
-                                    {property.bedrooms ?? "-"}
-                                  </p>
-                                  <p className="text-[10px] font-semibold text-slate-500">
-                                    Dorm.
-                                  </p>
-                                </div>
-
-                                <div className="rounded-2xl bg-slate-50 px-2 py-2 text-center">
-                                  <p className="text-sm font-semibold text-[#111111]">
-                                    {property.bathrooms ?? "-"}
-                                  </p>
-                                  <p className="text-[10px] font-semibold text-slate-500">
-                                    Baños
-                                  </p>
-                                </div>
-
-                                <div className="rounded-2xl bg-slate-50 px-2 py-2 text-center">
-                                  <p className="text-sm font-semibold text-[#111111]">
-                                    {property.covered_area ?? "-"}
-                                  </p>
-                                  <p className="text-[10px] font-semibold text-slate-500">
-                                    Cub.
-                                  </p>
-                                </div>
-
-                                <div className="rounded-2xl bg-slate-50 px-2 py-2 text-center">
-                                  <p className="text-sm font-semibold text-[#111111]">
-                                    {property.total_area ?? "-"}
-                                  </p>
-                                  <p className="text-[10px] font-semibold text-slate-500">
-                                    Total
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="mt-4">
-                                <Link
-                                  href={`/propiedades/${property.slug}`}
-                                  className="inline-flex h-10 w-full items-center justify-center rounded-2xl bg-[#111111] px-4 text-sm font-semibold text-white transition hover:bg-[#D71920]"
-                                >
-                                  Ver propiedad
-                                </Link>
-                              </div>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {hasCarousel && (
-              <div className="mt-5 flex items-center justify-center gap-2">
-                {pages.map((_, index) => (
-                  <button
-                    key={index}
-                    type="button"
-                    onClick={() => setPage(index)}
-                    className={`h-2.5 rounded-full transition-all ${
-                      page === index
-                        ? "w-8 bg-white"
-                        : "w-2.5 bg-white/35 hover:bg-white/60"
-                    }`}
-                    aria-label={`Ir a página ${index + 1}`}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
+        <div className="grid items-stretch gap-7 md:grid-cols-2 xl:grid-cols-3">
+          {visibleProperties.map((property) => (
+            <DalvianPropertyCard key={property.id} property={property} />
+          ))}
+        </div>
       </div>
     </section>
   );

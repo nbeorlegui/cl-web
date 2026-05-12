@@ -31,7 +31,7 @@ export default async function DashboardPropertiesPage({ searchParams }: PageProp
       province, city, neighborhood, address, show_address, latitude, longitude,
       bedrooms, bathrooms, rooms, garages, garage_type,
       covered_area, total_area, land_area, age_years, floors_count, condition,
-      private_neighborhood, apt_credit, financing, accepts_exchange, accepts_pets,
+      private_neighborhood, apt_credit, furnished, financing, accepts_exchange, accepts_pets,
       has_water, has_electricity, has_gas, has_internet, energy_efficiency,
       has_equipped_kitchen, has_laundry, has_air_conditioning, has_fireplace,
       has_sauna, heating_type, has_pool, has_garden, has_bbq,
