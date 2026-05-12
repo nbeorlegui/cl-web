@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState, type ChangeEvent } from "react";
+import { ChangeEvent, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
 import {
   createPropertyAction,
@@ -51,6 +51,7 @@ export type Property = {
   floors_count: number | null;
   condition: string | null;
   private_neighborhood: boolean | null;
+  semi_private: boolean | null;
   apt_credit: boolean | null;
   furnished: boolean | null;
   financing: boolean | null;
@@ -88,7 +89,6 @@ type Props = {
 };
 
 type NewImagePreview = {
-  id: string;
   file: File;
   previewUrl: string;
   index: number;
@@ -116,6 +116,24 @@ function getCoverImage(property: Property) {
 
 function textValue(value: string | number | null | undefined) {
   return value === null || value === undefined ? "" : String(value);
+}
+
+function SubmitButton({
+  children,
+  loadingText,
+  className,
+}: {
+  children: string;
+  loadingText: string;
+  className: string;
+}) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button type="submit" disabled={pending} className={className}>
+      {pending ? loadingText : children}
+    </button>
+  );
 }
 
 function CheckField({
@@ -220,38 +238,14 @@ function SelectField({
         className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
       >
         <option value="">Seleccionar</option>
+
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value || option.label} value={option.value}>
             {option.label}
           </option>
         ))}
       </select>
     </label>
-  );
-}
-
-function SubmitButton({
-  children,
-  loadingText,
-  className,
-}: {
-  children: string;
-  loadingText: string;
-  className: string;
-}) {
-  const { pending } = useFormStatus();
-
-  return (
-    <button type="submit" disabled={pending} className={className}>
-      {pending ? (
-        <span className="inline-flex items-center gap-2">
-          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-          {loadingText}
-        </span>
-      ) : (
-        children
-      )}
-    </button>
   );
 }
 
@@ -267,27 +261,37 @@ export default function PropertiesDashboardClient({
   const [selectedCoverImageId, setSelectedCoverImageId] = useState<string | null>(
     null
   );
+  const [selectedFiles, setSelectedFiles] = useState<NewImagePreview[]>([]);
   const [selectedNewCoverIndex, setSelectedNewCoverIndex] = useState<
     number | null
   >(null);
-  const [selectedFiles, setSelectedFiles] = useState<NewImagePreview[]>([]);
   const [deletedImageIds, setDeletedImageIds] = useState<string[]>([]);
+  const [removedNewImageIndexes, setRemovedNewImageIndexes] = useState<number[]>(
+    []
+  );
 
   const canManageProperties =
     currentUserRole === "superadmin" || currentUserRole === "admin";
 
   const orderedProperties = useMemo(() => properties, [properties]);
 
-  function resetImageState() {
+  const visibleExistingImages = useMemo(() => {
+    return (editingProperty?.property_images || [])
+      .filter((image) => image.url && !deletedImageIds.includes(image.id))
+      .sort((a, b) => (a.position || 999) - (b.position || 999));
+  }, [editingProperty, deletedImageIds]);
+
+  function resetImageStates() {
     selectedFiles.forEach((image) => URL.revokeObjectURL(image.previewUrl));
     setSelectedFiles([]);
-    setSelectedNewCoverIndex(null);
     setSelectedCoverImageId(null);
+    setSelectedNewCoverIndex(null);
     setDeletedImageIds([]);
+    setRemovedNewImageIndexes([]);
   }
 
   function openCreateModal() {
-    resetImageState();
+    resetImageStates();
     setEditingProperty(null);
     setIsFormOpen(true);
   }
@@ -295,7 +299,7 @@ export default function PropertiesDashboardClient({
   function openEditModal(property: Property) {
     if (!canManageProperties) return;
 
-    resetImageState();
+    resetImageStates();
 
     const sortedImages = [...(property.property_images || [])]
       .filter((image) => image.url)
@@ -312,7 +316,7 @@ export default function PropertiesDashboardClient({
   }
 
   function closeFormModal() {
-    resetImageState();
+    resetImageStates();
     setEditingProperty(null);
     setIsFormOpen(false);
   }
@@ -326,37 +330,18 @@ export default function PropertiesDashboardClient({
     selectedFiles.forEach((image) => URL.revokeObjectURL(image.previewUrl));
 
     const files = Array.from(event.target.files || []);
+
     const previews = files.map((file, index) => ({
-      id: `${file.name}-${file.size}-${index}`,
       file,
       previewUrl: URL.createObjectURL(file),
       index,
     }));
 
     setSelectedFiles(previews);
+    setRemovedNewImageIndexes([]);
 
-    if (previews.length > 0 && !selectedCoverImageId) {
+    if (!selectedCoverImageId && previews.length > 0) {
       setSelectedNewCoverIndex(0);
-    }
-
-    if (previews.length === 0) {
-      setSelectedNewCoverIndex(null);
-    }
-  }
-
-  function removeNewImage(index: number) {
-    setSelectedFiles((current) => {
-      const imageToRemove = current.find((image) => image.index === index);
-
-      if (imageToRemove) {
-        URL.revokeObjectURL(imageToRemove.previewUrl);
-      }
-
-      return current.filter((image) => image.index !== index);
-    });
-
-    if (selectedNewCoverIndex === index) {
-      setSelectedNewCoverIndex(null);
     }
   }
 
@@ -370,10 +355,23 @@ export default function PropertiesDashboardClient({
     }
   }
 
-  const visibleEditingImages =
-    editingProperty?.property_images
-      ?.filter((image) => image.url && !deletedImageIds.includes(image.id))
-      .sort((a, b) => (a.position || 999) - (b.position || 999)) || [];
+  function removeNewImage(index: number) {
+    const imageToRemove = selectedFiles.find((image) => image.index === index);
+
+    if (imageToRemove) {
+      URL.revokeObjectURL(imageToRemove.previewUrl);
+    }
+
+    setSelectedFiles((current) => current.filter((image) => image.index !== index));
+
+    setRemovedNewImageIndexes((current) =>
+      current.includes(index) ? current : [...current, index]
+    );
+
+    if (selectedNewCoverIndex === index) {
+      setSelectedNewCoverIndex(null);
+    }
+  }
 
   return (
     <section className="w-full">
@@ -616,42 +614,43 @@ export default function PropertiesDashboardClient({
                     name="cover_image_id"
                     value={selectedCoverImageId || ""}
                   />
-
-                  <input
-                    type="hidden"
-                    name="new_cover_index"
-                    value={selectedNewCoverIndex ?? ""}
-                  />
-
-                  {deletedImageIds.map((imageId) => (
-                    <input
-                      key={imageId}
-                      type="hidden"
-                      name="delete_image_ids"
-                      value={imageId}
-                    />
-                  ))}
-
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                      Código
-                    </p>
-
-                    <p className="mt-1 text-sm font-semibold text-slate-900">
-                      {editingProperty.code || "Se genera automáticamente"}
-                    </p>
-                  </div>
                 </>
               )}
 
-              {!editingProperty && (
-                <>
-                  <input
-                    type="hidden"
-                    name="new_cover_index"
-                    value={selectedNewCoverIndex ?? ""}
-                  />
-                </>
+              <input
+                type="hidden"
+                name="new_cover_index"
+                value={selectedNewCoverIndex ?? ""}
+              />
+
+              {deletedImageIds.map((imageId) => (
+                <input
+                  key={imageId}
+                  type="hidden"
+                  name="delete_image_ids"
+                  value={imageId}
+                />
+              ))}
+
+              {removedNewImageIndexes.map((index) => (
+                <input
+                  key={index}
+                  type="hidden"
+                  name="skip_new_image_indexes"
+                  value={index}
+                />
+              ))}
+
+              {editingProperty && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                    Código
+                  </p>
+
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    {editingProperty.code || "Se genera automáticamente"}
+                  </p>
+                </div>
               )}
 
               <div className="grid gap-4 md:grid-cols-3">
@@ -899,6 +898,7 @@ export default function PropertiesDashboardClient({
                     name="heating_type"
                     defaultValue={editingProperty?.heating_type}
                     options={[
+                      { label: "No especifica", value: "" },
                       { label: "Estufa", value: "Estufa" },
                       { label: "Radiadores", value: "Radiadores" },
                       { label: "Losa radiante", value: "Losa radiante" },
@@ -982,6 +982,12 @@ export default function PropertiesDashboardClient({
                     label="Barrio privado"
                     name="private_neighborhood"
                     defaultChecked={editingProperty?.private_neighborhood}
+                  />
+
+                  <CheckField
+                    label="Semi Privado"
+                    name="semi_private"
+                    defaultChecked={editingProperty?.semi_private}
                   />
 
                   <CheckField
@@ -1086,7 +1092,7 @@ export default function PropertiesDashboardClient({
                   />
                 </label>
 
-                {visibleEditingImages.length > 0 && (
+                {visibleExistingImages.length > 0 && (
                   <div className="mt-4">
                     <div className="mb-3">
                       <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
@@ -1100,7 +1106,7 @@ export default function PropertiesDashboardClient({
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      {visibleEditingImages.map((image) => {
+                      {visibleExistingImages.map((image) => {
                         const isSelectedCover = selectedCoverImageId === image.id;
 
                         return (
@@ -1115,8 +1121,8 @@ export default function PropertiesDashboardClient({
                             <button
                               type="button"
                               onClick={() => {
-                                setSelectedCoverImageId(image.id);
                                 setSelectedNewCoverIndex(null);
+                                setSelectedCoverImageId(image.id);
                               }}
                               className="absolute inset-0 z-10"
                               title="Usar como portada"
@@ -1144,10 +1150,7 @@ export default function PropertiesDashboardClient({
 
                             <button
                               type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                markImageForDelete(image.id);
-                              }}
+                              onClick={() => markImageForDelete(image.id)}
                               className="absolute right-2 top-2 z-30 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-xs font-bold text-white transition hover:bg-[#D71920]"
                               title="Eliminar imagen"
                             >
@@ -1168,11 +1171,17 @@ export default function PropertiesDashboardClient({
 
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                       {selectedFiles.map((image) => {
+                        const isRemoved = removedNewImageIndexes.includes(
+                          image.index
+                        );
+
+                        if (isRemoved) return null;
+
                         const isCover = selectedNewCoverIndex === image.index;
 
                         return (
                           <div
-                            key={image.id}
+                            key={image.index}
                             className={`group relative h-28 overflow-hidden rounded-2xl border bg-slate-100 ${
                               isCover
                                 ? "border-[#D71920] ring-4 ring-[#D71920]/15"

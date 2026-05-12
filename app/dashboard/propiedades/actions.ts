@@ -1,28 +1,32 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
+const BUCKET = "property-images";
+
 type UserRole = "superadmin" | "admin" | "user";
-const IMAGE_BUCKET = "property-images";
 
 function getString(formData: FormData, key: string) {
   const value = formData.get(key);
-  if (typeof value !== "string") return null;
-  const clean = value.trim();
-  return clean.length ? clean : null;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function getNumber(formData: FormData, key: string) {
-  const value = getString(formData, key);
-  if (!value) return null;
-  const number = Number(value.replace(",", "."));
+  const value = formData.get(key);
+  if (typeof value !== "string" || value.trim() === "") return null;
+
+  const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
 function getBoolean(formData: FormData, key: string) {
-  return formData.get(key) === "on" || formData.get(key) === "true";
+  const value = formData.get(key);
+
+  if (value === "true") return true;
+  if (value === "false") return false;
+
+  return value === "on";
 }
 
 function slugify(value: string) {
@@ -35,12 +39,12 @@ function slugify(value: string) {
 }
 
 function getPropertyPayload(formData: FormData) {
-  const title = getString(formData, "title") || "Propiedad sin título";
+  const title = getString(formData, "title");
+  const manualSlug = getString(formData, "slug");
 
   return {
-    // No enviamos code. Supabase lo genera automáticamente con trigger/sequence.
     title,
-    slug: getString(formData, "slug") || slugify(title),
+    slug: manualSlug || (title ? slugify(title) : null),
     description: getString(formData, "description"),
     short_description: getString(formData, "short_description"),
     operation: getString(formData, "operation"),
@@ -69,6 +73,7 @@ function getPropertyPayload(formData: FormData) {
     floors_count: getNumber(formData, "floors_count"),
     condition: getString(formData, "condition"),
     private_neighborhood: getBoolean(formData, "private_neighborhood"),
+    semi_private: getBoolean(formData, "semi_private"),
     apt_credit: getBoolean(formData, "apt_credit"),
     furnished: getBoolean(formData, "furnished"),
     financing: getBoolean(formData, "financing"),
@@ -94,14 +99,19 @@ function getPropertyPayload(formData: FormData) {
     owner_name: getString(formData, "owner_name"),
     owner_phone: getString(formData, "owner_phone"),
     internal_notes: getString(formData, "internal_notes"),
-    updated_at: new Date().toISOString(),
   };
 }
 
-async function getCurrentUserRole() {
+async function getCurrentRole() {
   const supabase = await createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
 
   const { data: profile } = await supabase
     .from("profiles")
@@ -109,154 +119,57 @@ async function getCurrentUserRole() {
     .eq("id", user.id)
     .single<{ role: UserRole }>();
 
-  return { supabase, role: profile?.role || "user" };
+  return profile?.role || "user";
 }
 
-function canManageProperties(role: UserRole) {
+function canManage(role: UserRole) {
   return role === "superadmin" || role === "admin";
 }
-
-function getFileExtension(file: File) {
-  const fromName = file.name.split(".").pop();
-  if (fromName && fromName !== file.name) return fromName.toLowerCase();
-  if (file.type.includes("png")) return "png";
-  if (file.type.includes("webp")) return "webp";
-  return "jpg";
-}
-
 
 function getImageFiles(formData: FormData) {
   return formData
     .getAll("images")
-    .filter((item): item is File => item instanceof File && item.size > 0);
+    .filter((value): value is File => value instanceof File && value.size > 0);
 }
 
-function storagePathFromPublicUrl(url: string | null) {
+function getStoragePathFromUrl(url: string | null) {
   if (!url) return null;
 
-  const marker = `/storage/v1/object/public/${IMAGE_BUCKET}/`;
-  const index = url.indexOf(marker);
+  const marker = `/storage/v1/object/public/${BUCKET}/`;
+  const markerIndex = url.indexOf(marker);
 
-  if (index === -1) return null;
+  if (markerIndex === -1) return null;
 
-  return decodeURIComponent(url.slice(index + marker.length));
+  const path = url.slice(markerIndex + marker.length);
+  return decodeURIComponent(path.split("?")[0] || "");
 }
 
-async function getNextImagePosition(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  propertyId: string
-) {
-  const { data } = await supabase
-    .from("property_images")
-    .select("position")
-    .eq("property_id", propertyId)
-    .order("position", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  return Number(data?.position || 0) + 1;
-}
-
-async function propertyHasCover(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  propertyId: string
-) {
-  const { data } = await supabase
-    .from("property_images")
-    .select("id")
-    .eq("property_id", propertyId)
-    .eq("is_cover", true)
-    .limit(1)
-    .maybeSingle();
-
-  return Boolean(data?.id);
-}
-
-async function ensureOneCover(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  propertyId: string
-) {
-  const hasCover = await propertyHasCover(supabase, propertyId);
-
-  if (hasCover) return;
-
-  const { data: firstImage } = await supabase
-    .from("property_images")
-    .select("id")
-    .eq("property_id", propertyId)
-    .order("position", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (firstImage?.id) {
-    await supabase
-      .from("property_images")
-      .update({ is_cover: true })
-      .eq("id", firstImage.id)
-      .eq("property_id", propertyId);
-  }
-}
-
-async function deletePropertyImages(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  propertyId: string,
-  imageIds: string[]
-) {
-  if (!imageIds.length) return;
-
-  const { data: imagesToDelete } = await supabase
-    .from("property_images")
-    .select("id, url")
-    .eq("property_id", propertyId)
-    .in("id", imageIds);
-
-  const storagePaths =
-    imagesToDelete
-      ?.map((image: { url: string | null }) => storagePathFromPublicUrl(image.url))
-      .filter((path): path is string => Boolean(path)) || [];
-
-  if (storagePaths.length) {
-    await supabase.storage.from(IMAGE_BUCKET).remove(storagePaths);
-  }
-
-  await supabase
-    .from("property_images")
-    .delete()
-    .eq("property_id", propertyId)
-    .in("id", imageIds);
-}
-
-async function setExistingCover(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  propertyId: string,
-  imageId: string
-) {
-  await supabase
-    .from("property_images")
-    .update({ is_cover: false })
-    .eq("property_id", propertyId);
-
-  await supabase
-    .from("property_images")
-    .update({ is_cover: true })
-    .eq("id", imageId)
-    .eq("property_id", propertyId);
-}
-
-async function uploadPropertyImages({
+async function uploadImagesForProperty({
   supabase,
   propertyId,
-  files,
-  newCoverIndex,
+  formData,
   forceNewCover,
 }: {
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   propertyId: string;
-  files: File[];
-  newCoverIndex: number | null;
+  formData: FormData;
   forceNewCover: boolean;
 }) {
+  const files = getImageFiles(formData);
+  const skippedIndexes = formData.getAll("skip_new_image_indexes").map(String);
+  const newCoverIndexRaw = String(formData.get("new_cover_index") || "");
+  const newCoverIndex = newCoverIndexRaw !== "" ? Number(newCoverIndexRaw) : null;
+
   if (!files.length) return;
+
+  const { data: existingImages } = await supabase
+    .from("property_images")
+    .select("position")
+    .eq("property_id", propertyId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  let nextPosition = Number(existingImages?.[0]?.position || 0) + 1;
 
   if (forceNewCover || newCoverIndex !== null) {
     await supabase
@@ -265,157 +178,225 @@ async function uploadPropertyImages({
       .eq("property_id", propertyId);
   }
 
-  const hasCoverBeforeUpload = await propertyHasCover(supabase, propertyId);
-  let position = await getNextImagePosition(supabase, propertyId);
-  const rows = [];
+  for (const [index, file] of files.entries()) {
+    if (skippedIndexes.includes(String(index))) continue;
 
-  for (let index = 0; index < files.length; index++) {
-    const file = files[index];
-    const extension = getFileExtension(file);
-    const safeName = file.name
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9.]+/g, "-")
-      .replace(/(^-|-$)+/g, "");
-
-    const filePath = `${propertyId}/${Date.now()}-${index}-${safeName || `imagen.${extension}`}`;
+    const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
+    const fileName = `${Date.now()}-${index}-${slugify(file.name.replace(/\.[^.]+$/, ""))}.${extension}`;
+    const filePath = `${propertyId}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
-      .from(IMAGE_BUCKET)
+      .from(BUCKET)
       .upload(filePath, file, {
-        contentType: file.type || `image/${extension}`,
+        cacheControl: "3600",
         upsert: false,
+        contentType: file.type || "image/jpeg",
       });
 
-    if (uploadError) throw new Error(uploadError.message);
+    if (uploadError) {
+      throw uploadError;
+    }
 
-    const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(filePath);
+    const { data: publicUrlData } = supabase.storage
+      .from(BUCKET)
+      .getPublicUrl(filePath);
 
-    rows.push({
+    const isCover = newCoverIndex === index || (forceNewCover && index === 0);
+
+    const { error: imageError } = await supabase.from("property_images").insert({
       property_id: propertyId,
-      url: data.publicUrl,
-      is_cover:
-        newCoverIndex !== null
-          ? newCoverIndex === index
-          : !hasCoverBeforeUpload && index === 0,
-      position,
+      url: publicUrlData.publicUrl,
+      is_cover: isCover,
+      position: nextPosition,
     });
 
-    position += 1;
-  }
+    if (imageError) {
+      throw imageError;
+    }
 
-  if (rows.length) {
-    const { error } = await supabase.from("property_images").insert(rows);
-    if (error) throw new Error(error.message);
+    nextPosition += 1;
   }
 }
 
 export async function createPropertyAction(formData: FormData) {
-  const { supabase } = await getCurrentUserRole();
+  const role = await getCurrentRole();
+  const supabase = await createSupabaseServerClient();
 
-  const { data: property, error } = await supabase
-    .from("properties")
-    .insert({ ...getPropertyPayload(formData), created_at: new Date().toISOString() })
-    .select("id")
-    .single<{ id: string }>();
+  try {
+    const payload = getPropertyPayload(formData);
 
-  if (error || !property) {
-    redirect(`/dashboard/propiedades?error=${encodeURIComponent(error?.message || "create-error")}`);
+    const { data: property, error } = await supabase
+      .from("properties")
+      .insert(payload)
+      .select("id")
+      .single<{ id: string }>();
+
+    if (error || !property) {
+      throw error || new Error("No se pudo crear la propiedad.");
+    }
+
+    await uploadImagesForProperty({
+      supabase,
+      propertyId: property.id,
+      formData,
+      forceNewCover: true,
+    });
+
+    redirect("/dashboard/propiedades?success=create");
+  } catch (error) {
+    console.error("createPropertyAction error:", error);
+    redirect("/dashboard/propiedades?error=save");
   }
-
-  const files = getImageFiles(formData);
-  const newCoverIndexRaw = getString(formData, "new_cover_index");
-  const newCoverIndex =
-    newCoverIndexRaw !== null && Number.isFinite(Number(newCoverIndexRaw))
-      ? Number(newCoverIndexRaw)
-      : null;
-
-  await uploadPropertyImages({
-    supabase,
-    propertyId: property.id,
-    files,
-    newCoverIndex,
-    forceNewCover: true,
-  });
-
-  await ensureOneCover(supabase, property.id);
-
-  revalidatePath("/");
-  revalidatePath("/propiedades");
-  revalidatePath("/dashboard/propiedades");
-  redirect("/dashboard/propiedades?success=create");
 }
 
 export async function updatePropertyAction(formData: FormData) {
-  const { supabase, role } = await getCurrentUserRole();
-  if (!canManageProperties(role)) redirect("/dashboard/propiedades?error=unauthorized");
+  const role = await getCurrentRole();
 
-  const id = getString(formData, "id");
-  if (!id) redirect("/dashboard/propiedades?error=missing-id");
-
-  const payload = getPropertyPayload(formData);
-  const { error } = await supabase.from("properties").update(payload).eq("id", id);
-  if (error) redirect(`/dashboard/propiedades?error=${encodeURIComponent(error.message)}`);
-
-  const coverImageId = getString(formData, "cover_image_id");
-  const deleteImageIds = formData.getAll("delete_image_ids").map(String);
-  const newCoverIndexRaw = getString(formData, "new_cover_index");
-  const newCoverIndex =
-    newCoverIndexRaw !== null && Number.isFinite(Number(newCoverIndexRaw))
-      ? Number(newCoverIndexRaw)
-      : null;
-
-  await deletePropertyImages(supabase, id, deleteImageIds);
-
-  if (coverImageId && !deleteImageIds.includes(coverImageId)) {
-    await setExistingCover(supabase, id, coverImageId);
+  if (!canManage(role)) {
+    redirect("/dashboard/propiedades?error=unauthorized");
   }
 
-  await uploadPropertyImages({
-    supabase,
-    propertyId: id,
-    files: getImageFiles(formData),
-    newCoverIndex,
-    forceNewCover: newCoverIndex !== null,
-  });
+  const supabase = await createSupabaseServerClient();
+  const propertyId = String(formData.get("id") || "");
 
-  await ensureOneCover(supabase, id);
+  if (!propertyId) {
+    redirect("/dashboard/propiedades?error=missing-id");
+  }
 
-  revalidatePath("/");
-  revalidatePath("/propiedades");
-  revalidatePath(`/propiedades/${payload.slug}`);
-  revalidatePath("/dashboard/propiedades");
-  redirect("/dashboard/propiedades?success=update");
+  try {
+    const payload = getPropertyPayload(formData);
+
+    const { error } = await supabase
+      .from("properties")
+      .update(payload)
+      .eq("id", propertyId);
+
+    if (error) throw error;
+
+    const deleteImageIds = formData.getAll("delete_image_ids").map(String);
+
+    if (deleteImageIds.length > 0) {
+      const { data: imagesToDelete } = await supabase
+        .from("property_images")
+        .select("id, url")
+        .eq("property_id", propertyId)
+        .in("id", deleteImageIds);
+
+      const storagePaths =
+        imagesToDelete
+          ?.map((image) => getStoragePathFromUrl(image.url))
+          .filter((value): value is string => Boolean(value)) || [];
+
+      if (storagePaths.length > 0) {
+        await supabase.storage.from(BUCKET).remove(storagePaths);
+      }
+
+      const { error: deleteImagesError } = await supabase
+        .from("property_images")
+        .delete()
+        .eq("property_id", propertyId)
+        .in("id", deleteImageIds);
+
+      if (deleteImagesError) throw deleteImagesError;
+    }
+
+    const coverImageId = String(formData.get("cover_image_id") || "");
+    const newCoverIndexRaw = String(formData.get("new_cover_index") || "");
+    const hasNewCover = newCoverIndexRaw !== "";
+
+    if (coverImageId) {
+      await supabase
+        .from("property_images")
+        .update({ is_cover: false })
+        .eq("property_id", propertyId);
+
+      await supabase
+        .from("property_images")
+        .update({ is_cover: true })
+        .eq("id", coverImageId)
+        .eq("property_id", propertyId);
+    }
+
+    await uploadImagesForProperty({
+      supabase,
+      propertyId,
+      formData,
+      forceNewCover: hasNewCover,
+    });
+
+    // Si se eliminó la portada y no se eligió otra, dejamos la primera disponible como portada.
+    if (!coverImageId && !hasNewCover) {
+      const { data: currentCover } = await supabase
+        .from("property_images")
+        .select("id")
+        .eq("property_id", propertyId)
+        .eq("is_cover", true)
+        .maybeSingle<{ id: string }>();
+
+      if (!currentCover) {
+        const { data: firstImage } = await supabase
+          .from("property_images")
+          .select("id")
+          .eq("property_id", propertyId)
+          .order("position", { ascending: true })
+          .limit(1)
+          .maybeSingle<{ id: string }>();
+
+        if (firstImage) {
+          await supabase
+            .from("property_images")
+            .update({ is_cover: true })
+            .eq("id", firstImage.id)
+            .eq("property_id", propertyId);
+        }
+      }
+    }
+
+    redirect("/dashboard/propiedades?success=update");
+  } catch (error) {
+    console.error("updatePropertyAction error:", error);
+    redirect("/dashboard/propiedades?error=save");
+  }
 }
 
 export async function deletePropertyAction(formData: FormData) {
-  const { supabase, role } = await getCurrentUserRole();
-  if (!canManageProperties(role)) redirect("/dashboard/propiedades?error=unauthorized");
+  const role = await getCurrentRole();
 
-  const id = getString(formData, "id");
-  if (!id) redirect("/dashboard/propiedades?error=missing-id");
-
-  const { data: propertyImages } = await supabase
-    .from("property_images")
-    .select("url")
-    .eq("property_id", id);
-
-  const storagePaths =
-    propertyImages
-      ?.map((image: { url: string | null }) => storagePathFromPublicUrl(image.url))
-      .filter((path): path is string => Boolean(path)) || [];
-
-  if (storagePaths.length) {
-    await supabase.storage.from(IMAGE_BUCKET).remove(storagePaths);
+  if (!canManage(role)) {
+    redirect("/dashboard/propiedades?error=unauthorized");
   }
 
-  await supabase.from("property_images").delete().eq("property_id", id);
-  const { error } = await supabase.from("properties").delete().eq("id", id);
-  if (error) redirect(`/dashboard/propiedades?error=${encodeURIComponent(error.message)}`);
+  const supabase = await createSupabaseServerClient();
+  const propertyId = String(formData.get("id") || "");
 
-  revalidatePath("/");
-  revalidatePath("/propiedades");
-  revalidatePath("/dashboard/propiedades");
-  redirect("/dashboard/propiedades?success=delete");
+  if (!propertyId) {
+    redirect("/dashboard/propiedades?error=missing-id");
+  }
+
+  try {
+    const { data: images } = await supabase
+      .from("property_images")
+      .select("url")
+      .eq("property_id", propertyId);
+
+    const storagePaths =
+      images
+        ?.map((image) => getStoragePathFromUrl(image.url))
+        .filter((value): value is string => Boolean(value)) || [];
+
+    if (storagePaths.length > 0) {
+      await supabase.storage.from(BUCKET).remove(storagePaths);
+    }
+
+    await supabase.from("property_images").delete().eq("property_id", propertyId);
+
+    const { error } = await supabase.from("properties").delete().eq("id", propertyId);
+
+    if (error) throw error;
+
+    redirect("/dashboard/propiedades?success=delete");
+  } catch (error) {
+    console.error("deletePropertyAction error:", error);
+    redirect("/dashboard/propiedades?error=delete");
+  }
 }
