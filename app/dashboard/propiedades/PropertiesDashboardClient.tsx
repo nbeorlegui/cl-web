@@ -1,11 +1,27 @@
 "use client";
 
 import Image from "next/image";
-import { ChangeEvent, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   createPropertyAction,
   deletePropertyAction,
+  duplicatePropertyAction,
   updatePropertyAction,
 } from "./actions";
 
@@ -88,10 +104,35 @@ type Props = {
   currentUserRole: UserRole;
 };
 
-type NewImagePreview = {
-  file: File;
-  previewUrl: string;
-  index: number;
+type EditableImage = {
+  uid: string;
+  kind: "existing" | "new";
+  id?: string;
+  url: string;
+  isCover: boolean;
+  originalIndex?: number;
+};
+
+const ITEMS_PER_PAGE = 5;
+
+type PropertyFilters = {
+  search: string;
+  operation: string;
+  propertyType: string;
+  status: string;
+  publication: string;
+  minPrice: string;
+  maxPrice: string;
+};
+
+const DEFAULT_FILTERS: PropertyFilters = {
+  search: "",
+  operation: "",
+  propertyType: "",
+  status: "",
+  publication: "",
+  minPrice: "",
+  maxPrice: "",
 };
 
 function formatPrice(value: number | null, currency: string | null) {
@@ -116,24 +157,6 @@ function getCoverImage(property: Property) {
 
 function textValue(value: string | number | null | undefined) {
   return value === null || value === undefined ? "" : String(value);
-}
-
-function SubmitButton({
-  children,
-  loadingText,
-  className,
-}: {
-  children: string;
-  loadingText: string;
-  className: string;
-}) {
-  const { pending } = useFormStatus();
-
-  return (
-    <button type="submit" disabled={pending} className={className}>
-      {pending ? loadingText : children}
-    </button>
-  );
 }
 
 function CheckField({
@@ -172,7 +195,6 @@ function YesNoField({
       <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
         {label}
       </span>
-
       <select
         name={name}
         defaultValue={defaultValue ? "true" : "false"}
@@ -203,7 +225,6 @@ function InputField({
       <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
         {label}
       </span>
-
       <input
         name={name}
         type={type}
@@ -231,21 +252,123 @@ function SelectField({
       <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
         {label}
       </span>
-
       <select
         name={name}
         defaultValue={defaultValue || ""}
         className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
       >
         <option value="">Seleccionar</option>
-
         {options.map((option) => (
-          <option key={option.value || option.label} value={option.value}>
+          <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
       </select>
     </label>
+  );
+}
+
+function SubmitButton({
+  children,
+  loadingText,
+  className,
+}: {
+  children: string;
+  loadingText: string;
+  className: string;
+}) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button type="submit" disabled={pending} className={className}>
+      {pending ? loadingText : children}
+    </button>
+  );
+}
+
+function SortableImageCard({
+  image,
+  onSetCover,
+  onRemove,
+}: {
+  image: EditableImage;
+  onSetCover: (uid: string) => void;
+  onRemove: (image: EditableImage) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: image.uid });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group relative h-32 overflow-hidden rounded-2xl border bg-slate-100 transition ${
+        image.isCover
+          ? "border-[#D71920] ring-4 ring-[#D71920]/15"
+          : "border-slate-200 hover:border-[#D71920]/60"
+      } ${isDragging ? "z-20 opacity-80 shadow-2xl" : ""}`}
+    >
+      {image.kind === "existing" ? (
+        <Image
+          src={image.url}
+          alt="Imagen propiedad"
+          fill
+          className="object-cover transition duration-300 group-hover:scale-[1.03]"
+          sizes="240px"
+        />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={image.url}
+          alt="Imagen nueva"
+          className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+        />
+      )}
+
+      <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
+
+      <button
+        type="button"
+        onClick={() => onSetCover(image.uid)}
+        className={`absolute left-2 top-2 rounded-full px-3 py-1.5 text-[10px] font-bold shadow-sm backdrop-blur transition ${
+          image.isCover
+            ? "bg-[#D71920] text-white"
+            : "bg-white/95 text-[#111111] hover:bg-[#D71920] hover:text-white"
+        }`}
+      >
+        {image.isCover ? "Portada" : "Usar portada"}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => onRemove(image)}
+        className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-xs font-bold text-white transition hover:bg-[#D71920]"
+        title={image.kind === "existing" ? "Eliminar imagen" : "Quitar imagen"}
+      >
+        ×
+      </button>
+
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        className="absolute bottom-2 right-2 flex h-8 w-8 cursor-grab items-center justify-center rounded-full bg-white/95 text-sm font-black text-[#111111] shadow-sm backdrop-blur active:cursor-grabbing"
+        title="Arrastrar para ordenar"
+      >
+        ↕
+      </button>
+
+      {image.kind === "new" && (
+        <span className="absolute bottom-2 left-2 rounded-full bg-white/95 px-2 py-1 text-[10px] font-bold text-[#D71920] shadow-sm">
+          Nueva
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -258,66 +381,170 @@ export default function PropertiesDashboardClient({
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProperty, setEditingProperty] = useState<Property | null>(null);
   const [propertyToDelete, setPropertyToDelete] = useState<Property | null>(null);
-  const [selectedCoverImageId, setSelectedCoverImageId] = useState<string | null>(
-    null
-  );
-  const [selectedFiles, setSelectedFiles] = useState<NewImagePreview[]>([]);
-  const [selectedNewCoverIndex, setSelectedNewCoverIndex] = useState<
-    number | null
-  >(null);
+  const [propertyToDuplicate, setPropertyToDuplicate] = useState<Property | null>(null);
+  const [visibleSuccessMessage, setVisibleSuccessMessage] = useState(successMessage);
+  const [editableImages, setEditableImages] = useState<EditableImage[]>([]);
   const [deletedImageIds, setDeletedImageIds] = useState<string[]>([]);
-  const [removedNewImageIndexes, setRemovedNewImageIndexes] = useState<number[]>(
-    []
+  const [filters, setFilters] = useState<PropertyFilters>(DEFAULT_FILTERS);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6,
+      },
+    })
   );
 
   const canManageProperties =
     currentUserRole === "superadmin" || currentUserRole === "admin";
 
-  const orderedProperties = useMemo(() => properties, [properties]);
 
-  const visibleExistingImages = useMemo(() => {
-    return (editingProperty?.property_images || [])
-      .filter((image) => image.url && !deletedImageIds.includes(image.id))
-      .sort((a, b) => (a.position || 999) - (b.position || 999));
-  }, [editingProperty, deletedImageIds]);
+  useEffect(() => {
+    if (!successMessage) {
+      setVisibleSuccessMessage(null);
+      return;
+    }
 
-  function resetImageStates() {
-    selectedFiles.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-    setSelectedFiles([]);
-    setSelectedCoverImageId(null);
-    setSelectedNewCoverIndex(null);
+    setVisibleSuccessMessage(successMessage);
+
+    const timeout = window.setTimeout(() => {
+      setVisibleSuccessMessage(null);
+    }, 3000);
+
+    return () => window.clearTimeout(timeout);
+  }, [successMessage]);
+
+  const operationOptions = useMemo(() => {
+    return Array.from(
+      new Set(properties.map((property) => property.operation).filter(Boolean))
+    ) as string[];
+  }, [properties]);
+
+  const typeOptions = useMemo(() => {
+    return Array.from(
+      new Set(properties.map((property) => property.property_type).filter(Boolean))
+    ) as string[];
+  }, [properties]);
+
+  const statusOptions = useMemo(() => {
+    return Array.from(
+      new Set(properties.map((property) => property.status).filter(Boolean))
+    ) as string[];
+  }, [properties]);
+
+  const filteredProperties = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+    const minPrice = filters.minPrice ? Number(filters.minPrice) : null;
+    const maxPrice = filters.maxPrice ? Number(filters.maxPrice) : null;
+
+    return properties.filter((property) => {
+      const searchableText = [
+        property.code,
+        property.title,
+        property.neighborhood,
+        property.city,
+        property.province,
+        property.address,
+        property.owner_name,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      if (search && !searchableText.includes(search)) return false;
+      if (filters.operation && property.operation !== filters.operation) return false;
+      if (filters.propertyType && property.property_type !== filters.propertyType) {
+        return false;
+      }
+      if (filters.status && (property.status || "activa") !== filters.status) {
+        return false;
+      }
+      if (filters.publication === "published" && !property.published) return false;
+      if (filters.publication === "hidden" && property.published) return false;
+      if (minPrice !== null && (property.price || 0) < minPrice) return false;
+      if (maxPrice !== null && (property.price || 0) > maxPrice) return false;
+
+      return true;
+    });
+  }, [filters, properties]);
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredProperties.length / ITEMS_PER_PAGE)
+  );
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedProperties = useMemo(() => {
+    const start = (safeCurrentPage - 1) * ITEMS_PER_PAGE;
+    return filteredProperties.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredProperties, safeCurrentPage]);
+
+  const hasActiveFilters = Object.values(filters).some(Boolean);
+
+  function updateFilter<Key extends keyof PropertyFilters>(
+    key: Key,
+    value: PropertyFilters[Key]
+  ) {
+    setFilters((current) => ({
+      ...current,
+      [key]: value,
+    }));
+    setCurrentPage(1);
+  }
+
+  function clearFilters() {
+    setFilters(DEFAULT_FILTERS);
+    setCurrentPage(1);
+  }
+
+  function resetImageState() {
+    setEditableImages((current) => {
+      current
+        .filter((image) => image.kind === "new")
+        .forEach((image) => URL.revokeObjectURL(image.url));
+
+      return [];
+    });
+
     setDeletedImageIds([]);
-    setRemovedNewImageIndexes([]);
   }
 
   function openCreateModal() {
-    resetImageStates();
     setEditingProperty(null);
+    resetImageState();
     setIsFormOpen(true);
   }
 
   function openEditModal(property: Property) {
     if (!canManageProperties) return;
 
-    resetImageStates();
+    resetImageState();
 
     const sortedImages = [...(property.property_images || [])]
       .filter((image) => image.url)
       .sort((a, b) => (a.position || 999) - (b.position || 999));
 
-    const currentCover =
-      sortedImages.find((image) => image.is_cover)?.id ||
-      sortedImages[0]?.id ||
-      null;
+    const existingEditableImages: EditableImage[] = sortedImages.map(
+      (image, index) => ({
+        uid: `existing-${image.id}`,
+        kind: "existing",
+        id: image.id,
+        url: image.url || "",
+        isCover:
+          Boolean(image.is_cover) ||
+          !sortedImages.some((item) => item.is_cover) && index === 0,
+      })
+    );
 
-    setSelectedCoverImageId(currentCover);
+    setEditableImages(existingEditableImages);
     setEditingProperty(property);
     setIsFormOpen(true);
   }
 
   function closeFormModal() {
-    resetImageStates();
     setEditingProperty(null);
+    resetImageState();
     setIsFormOpen(false);
   }
 
@@ -326,52 +553,104 @@ export default function PropertiesDashboardClient({
     setPropertyToDelete(property);
   }
 
-  function handleNewImagesChange(event: ChangeEvent<HTMLInputElement>) {
-    selectedFiles.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-
-    const files = Array.from(event.target.files || []);
-
-    const previews = files.map((file, index) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-      index,
-    }));
-
-    setSelectedFiles(previews);
-    setRemovedNewImageIndexes([]);
-
-    if (!selectedCoverImageId && previews.length > 0) {
-      setSelectedNewCoverIndex(0);
-    }
+  function openDuplicateModal(property: Property) {
+    if (!canManageProperties) return;
+    setPropertyToDuplicate(property);
   }
 
-  function markImageForDelete(imageId: string) {
-    setDeletedImageIds((current) =>
-      current.includes(imageId) ? current : [...current, imageId]
+  function handleImagesChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files || []);
+
+    setEditableImages((current) => {
+      current
+        .filter((image) => image.kind === "new")
+        .forEach((image) => URL.revokeObjectURL(image.url));
+
+      const withoutOldNewImages = current.filter(
+        (image) => image.kind === "existing"
+      );
+
+      const newImages: EditableImage[] = files.map((file, index) => ({
+        uid: `new-${index}-${file.name}-${file.lastModified}`,
+        kind: "new",
+        url: URL.createObjectURL(file),
+        originalIndex: index,
+        isCover: false,
+      }));
+
+      const merged = [...withoutOldNewImages, ...newImages];
+      const hasCover = merged.some((image) => image.isCover);
+
+      if (!hasCover && merged.length > 0) {
+        return merged.map((image, index) => ({
+          ...image,
+          isCover: index === 0,
+        }));
+      }
+
+      return merged;
+    });
+  }
+
+  function setCoverImage(uid: string) {
+    setEditableImages((current) =>
+      current.map((image) => ({
+        ...image,
+        isCover: image.uid === uid,
+      }))
     );
-
-    if (selectedCoverImageId === imageId) {
-      setSelectedCoverImageId(null);
-    }
   }
 
-  function removeNewImage(index: number) {
-    const imageToRemove = selectedFiles.find((image) => image.index === index);
+  function removeEditableImage(imageToRemove: EditableImage) {
+    setEditableImages((current) => {
+      const next = current.filter((image) => image.uid !== imageToRemove.uid);
 
-    if (imageToRemove) {
-      URL.revokeObjectURL(imageToRemove.previewUrl);
-    }
+      if (imageToRemove.kind === "existing" && imageToRemove.id) {
+        setDeletedImageIds((ids) =>
+          ids.includes(imageToRemove.id || "") ? ids : [...ids, imageToRemove.id || ""]
+        );
+      }
 
-    setSelectedFiles((current) => current.filter((image) => image.index !== index));
+      if (imageToRemove.kind === "new") {
+        URL.revokeObjectURL(imageToRemove.url);
+      }
 
-    setRemovedNewImageIndexes((current) =>
-      current.includes(index) ? current : [...current, index]
-    );
+      if (imageToRemove.isCover && next.length > 0) {
+        return next.map((image, index) => ({
+          ...image,
+          isCover: index === 0,
+        }));
+      }
 
-    if (selectedNewCoverIndex === index) {
-      setSelectedNewCoverIndex(null);
-    }
+      return next;
+    });
   }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) return;
+
+    setEditableImages((current) => {
+      const oldIndex = current.findIndex((image) => image.uid === active.id);
+      const newIndex = current.findIndex((image) => image.uid === over.id);
+
+      if (oldIndex === -1 || newIndex === -1) return current;
+
+      return arrayMove(current, oldIndex, newIndex);
+    });
+  }
+
+  const imagesOrderPayload = JSON.stringify(
+    editableImages.map((image, index) => ({
+      uid: image.uid,
+      kind: image.kind,
+      id: image.id || null,
+      originalIndex: image.originalIndex ?? null,
+      position: index + 1,
+      isCover: image.isCover,
+    }))
+  );
 
   return (
     <section className="w-full">
@@ -380,11 +659,9 @@ export default function PropertiesDashboardClient({
           <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#D71920]">
             Dashboard
           </p>
-
           <h1 className="mt-1 text-2xl font-semibold tracking-[-0.03em] text-[#111111]">
             Propiedades
           </h1>
-
           <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
             Administrá las propiedades cargadas, su estado y publicación web.
           </p>
@@ -399,12 +676,11 @@ export default function PropertiesDashboardClient({
         </button>
       </div>
 
-      {successMessage && (
-        <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-          {successMessage}
+      {visibleSuccessMessage && (
+        <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 transition-opacity">
+          {visibleSuccessMessage}
         </div>
       )}
-
       {errorMessage && (
         <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-[#D71920]">
           {errorMessage}
@@ -416,10 +692,151 @@ export default function PropertiesDashboardClient({
           <h2 className="text-lg font-semibold tracking-[-0.02em] text-[#111111]">
             Listado de propiedades
           </h2>
-
           <p className="mt-1 text-sm text-slate-500">
-            {orderedProperties.length} propiedades cargadas
+            {filteredProperties.length} de {properties.length} propiedades
+            {hasActiveFilters ? " según filtros" : " cargadas"}
           </p>
+        </div>
+
+        <div className="border-b border-slate-200 bg-slate-50/60 px-4 py-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+            <label className="block xl:col-span-2">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Buscar
+              </span>
+              <input
+                type="search"
+                value={filters.search}
+                onChange={(event) => updateFilter("search", event.target.value)}
+                placeholder="Nombre, código, zona..."
+                className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition placeholder:text-slate-500 focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Operación
+              </span>
+              <select
+                value={filters.operation}
+                onChange={(event) =>
+                  updateFilter("operation", event.target.value)
+                }
+                className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+              >
+                <option value="">Todas</option>
+                {operationOptions.map((operation) => (
+                  <option key={operation} value={operation}>
+                    {operation}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Tipo
+              </span>
+              <select
+                value={filters.propertyType}
+                onChange={(event) =>
+                  updateFilter("propertyType", event.target.value)
+                }
+                className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+              >
+                <option value="">Todos</option>
+                {typeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Estado
+              </span>
+              <select
+                value={filters.status}
+                onChange={(event) => updateFilter("status", event.target.value)}
+                className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+              >
+                <option value="">Todos</option>
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Web
+              </span>
+              <select
+                value={filters.publication}
+                onChange={(event) =>
+                  updateFilter("publication", event.target.value)
+                }
+                className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+              >
+                <option value="">Todas</option>
+                <option value="published">Publicadas</option>
+                <option value="hidden">Ocultas</option>
+              </select>
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  Desde
+                </span>
+                <input
+                  type="number"
+                  value={filters.minPrice}
+                  onChange={(event) =>
+                    updateFilter("minPrice", event.target.value)
+                  }
+                  placeholder="0"
+                  className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition placeholder:text-slate-500 focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  Hasta
+                </span>
+                <input
+                  type="number"
+                  value={filters.maxPrice}
+                  onChange={(event) =>
+                    updateFilter("maxPrice", event.target.value)
+                  }
+                  placeholder="Max"
+                  className="h-10 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-[#111111] outline-none transition placeholder:text-slate-500 focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs font-medium text-slate-500">
+              Mostrando {paginatedProperties.length} de {filteredProperties.length}
+              {filteredProperties.length === 1 ? " propiedad" : " propiedades"}
+            </p>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="h-9 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 transition hover:border-[#D71920] hover:text-[#D71920]"
+              >
+                Limpiar filtros
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="overflow-x-auto border-t border-slate-200 pb-3">
@@ -434,9 +851,8 @@ export default function PropertiesDashboardClient({
                 <th className="w-[125px] px-3 py-3">Precio</th>
                 <th className="w-[105px] px-3 py-3">Estado</th>
                 <th className="w-[120px] px-3 py-3">Web</th>
-
                 {canManageProperties && (
-                  <th className="sticky right-0 z-10 w-[95px] bg-slate-50 px-3 py-3 text-right shadow-[-8px_0_12px_rgba(15,23,42,0.06)]">
+                  <th className="sticky right-0 z-10 w-[125px] bg-slate-50 px-3 py-3 text-right shadow-[-8px_0_12px_rgba(15,23,42,0.06)]">
                     Acciones
                   </th>
                 )}
@@ -444,7 +860,7 @@ export default function PropertiesDashboardClient({
             </thead>
 
             <tbody className="divide-y divide-slate-100">
-              {orderedProperties.map((property) => {
+              {paginatedProperties.map((property) => {
                 const coverImage = getCoverImage(property);
 
                 return (
@@ -452,7 +868,6 @@ export default function PropertiesDashboardClient({
                     <td className="w-[95px] px-3 py-3 text-sm font-bold text-slate-600">
                       {property.code || "-"}
                     </td>
-
                     <td className="w-[105px] px-3 py-3">
                       <div className="relative h-12 w-[82px] overflow-hidden rounded-xl bg-slate-100">
                         {coverImage ? (
@@ -470,37 +885,30 @@ export default function PropertiesDashboardClient({
                         )}
                       </div>
                     </td>
-
                     <td className="w-[310px] px-3 py-3">
                       <p className="max-w-[280px] truncate text-sm font-semibold leading-5 text-[#111111]">
                         {property.title || "Sin título"}
                       </p>
-
                       <p className="mt-1 max-w-[280px] truncate text-xs text-slate-500">
                         {[property.neighborhood, property.city]
                           .filter(Boolean)
                           .join(", ") || "Sin ubicación"}
                       </p>
                     </td>
-
                     <td className="w-[105px] px-3 py-3 text-sm text-slate-700">
                       {property.operation || "-"}
                     </td>
-
                     <td className="w-[120px] px-3 py-3 text-sm text-slate-700">
                       {property.property_type || "-"}
                     </td>
-
                     <td className="w-[125px] px-3 py-3 text-sm font-bold text-[#111111]">
                       {formatPrice(property.price, property.currency)}
                     </td>
-
                     <td className="w-[105px] px-3 py-3">
                       <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-[11px] font-bold uppercase text-slate-600">
                         {property.status || "Activa"}
                       </span>
                     </td>
-
                     <td className="w-[120px] px-3 py-3">
                       <span
                         className={`inline-flex rounded-full px-3 py-1 text-[11px] font-bold uppercase ${
@@ -512,9 +920,8 @@ export default function PropertiesDashboardClient({
                         {property.published ? "Publicada" : "Oculta"}
                       </span>
                     </td>
-
                     {canManageProperties && (
-                      <td className="sticky right-0 z-10 w-[95px] bg-white px-3 py-3 shadow-[-8px_0_12px_rgba(15,23,42,0.05)]">
+                      <td className="sticky right-0 z-10 w-[125px] bg-white px-3 py-3 shadow-[-8px_0_12px_rgba(15,23,42,0.05)]">
                         <div className="flex justify-end gap-2">
                           <button
                             type="button"
@@ -531,6 +938,23 @@ export default function PropertiesDashboardClient({
                             >
                               <path d="M12 20h9" />
                               <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openDuplicateModal(property)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920]"
+                            title="Duplicar propiedad"
+                          >
+                            <svg
+                              viewBox="0 0 24 24"
+                              className="h-4 w-4"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                            >
+                              <rect x="9" y="9" width="11" height="11" rx="2" />
+                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                             </svg>
                           </button>
 
@@ -560,19 +984,70 @@ export default function PropertiesDashboardClient({
                   </tr>
                 );
               })}
-
-              {!orderedProperties.length && (
+              {!paginatedProperties.length && (
                 <tr>
                   <td
                     colSpan={canManageProperties ? 9 : 8}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
-                    Todavía no hay propiedades cargadas.
+                    {hasActiveFilters
+                      ? "No hay propiedades que coincidan con los filtros."
+                      : "Todavía no hay propiedades cargadas."}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs font-medium text-slate-500">
+            Página {safeCurrentPage} de {totalPages} · {ITEMS_PER_PAGE} por página
+          </p>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              disabled={safeCurrentPage === 1}
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Anterior
+            </button>
+
+            <div className="flex items-center gap-1">
+              {Array.from({ length: totalPages }).map((_, index) => {
+                const page = index + 1;
+                const isActive = page === safeCurrentPage;
+
+                return (
+                  <button
+                    key={page}
+                    type="button"
+                    onClick={() => setCurrentPage(page)}
+                    className={`h-9 min-w-9 rounded-2xl px-3 text-xs font-bold transition ${
+                      isActive
+                        ? "bg-[#D71920] text-white"
+                        : "border border-slate-200 bg-white text-slate-700 hover:border-[#D71920] hover:text-[#D71920]"
+                    }`}
+                  >
+                    {page}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setCurrentPage((page) => Math.min(totalPages, page + 1))
+              }
+              disabled={safeCurrentPage === totalPages}
+              className="h-9 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Siguiente
+            </button>
+          </div>
         </div>
       </div>
 
@@ -584,14 +1059,12 @@ export default function PropertiesDashboardClient({
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#D71920]">
                   {editingProperty ? "Editar propiedad" : "Nueva propiedad"}
                 </p>
-
                 <h2 className="mt-1 text-xl font-semibold tracking-[-0.03em] text-[#111111]">
                   {editingProperty
                     ? editingProperty.title || "Propiedad"
                     : "Crear propiedad"}
                 </h2>
               </div>
-
               <button
                 type="button"
                 onClick={closeFormModal}
@@ -608,21 +1081,18 @@ export default function PropertiesDashboardClient({
               {editingProperty && (
                 <>
                   <input type="hidden" name="id" value={editingProperty.id} />
-
-                  <input
-                    type="hidden"
-                    name="cover_image_id"
-                    value={selectedCoverImageId || ""}
-                  />
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      Código
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      {editingProperty.code || "Se genera automáticamente"}
+                    </p>
+                  </div>
                 </>
               )}
 
-              <input
-                type="hidden"
-                name="new_cover_index"
-                value={selectedNewCoverIndex ?? ""}
-              />
-
+              <input type="hidden" name="images_order" value={imagesOrderPayload} />
               {deletedImageIds.map((imageId) => (
                 <input
                   key={imageId}
@@ -632,27 +1102,6 @@ export default function PropertiesDashboardClient({
                 />
               ))}
 
-              {removedNewImageIndexes.map((index) => (
-                <input
-                  key={index}
-                  type="hidden"
-                  name="skip_new_image_indexes"
-                  value={index}
-                />
-              ))}
-
-              {editingProperty && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                    Código
-                  </p>
-
-                  <p className="mt-1 text-sm font-semibold text-slate-900">
-                    {editingProperty.code || "Se genera automáticamente"}
-                  </p>
-                </div>
-              )}
-
               <div className="grid gap-4 md:grid-cols-3">
                 <InputField
                   label="Título"
@@ -660,14 +1109,12 @@ export default function PropertiesDashboardClient({
                   defaultValue={editingProperty?.title}
                   placeholder="Ej: Casa moderna en Chacras"
                 />
-
                 <InputField
                   label="Slug"
                   name="slug"
                   defaultValue={editingProperty?.slug}
                   placeholder="Se genera con el título si queda vacío"
                 />
-
                 <SelectField
                   label="Estado"
                   name="status"
@@ -680,7 +1127,6 @@ export default function PropertiesDashboardClient({
                     { label: "Inactiva", value: "inactiva" },
                   ]}
                 />
-
                 <SelectField
                   label="Operación"
                   name="operation"
@@ -690,7 +1136,6 @@ export default function PropertiesDashboardClient({
                     { label: "Alquiler", value: "Alquiler" },
                   ]}
                 />
-
                 <SelectField
                   label="Tipo"
                   name="property_type"
@@ -705,7 +1150,6 @@ export default function PropertiesDashboardClient({
                     { label: "Finca", value: "Finca" },
                   ]}
                 />
-
                 <SelectField
                   label="Moneda"
                   name="currency"
@@ -715,139 +1159,118 @@ export default function PropertiesDashboardClient({
                     { label: "ARS", value: "ARS" },
                   ]}
                 />
-
                 <InputField
                   label="Precio"
                   name="price"
                   type="number"
                   defaultValue={editingProperty?.price}
                 />
-
                 <InputField
                   label="Provincia"
                   name="province"
                   defaultValue={editingProperty?.province || "Mendoza"}
                 />
-
                 <InputField
                   label="Ciudad"
                   name="city"
                   defaultValue={editingProperty?.city}
                 />
-
                 <InputField
                   label="Barrio/Zona"
                   name="neighborhood"
                   defaultValue={editingProperty?.neighborhood}
                 />
-
                 <InputField
                   label="Dirección"
                   name="address"
                   defaultValue={editingProperty?.address}
                 />
-
                 <InputField
                   label="Latitud"
                   name="latitude"
                   type="number"
                   defaultValue={editingProperty?.latitude}
                 />
-
                 <InputField
                   label="Longitud"
                   name="longitude"
                   type="number"
                   defaultValue={editingProperty?.longitude}
                 />
-
                 <InputField
                   label="Dormitorios"
                   name="bedrooms"
                   type="number"
                   defaultValue={editingProperty?.bedrooms}
                 />
-
                 <InputField
                   label="Baños"
                   name="bathrooms"
                   type="number"
                   defaultValue={editingProperty?.bathrooms}
                 />
-
                 <InputField
                   label="Ambientes"
                   name="rooms"
                   type="number"
                   defaultValue={editingProperty?.rooms}
                 />
-
                 <InputField
                   label="Cocheras"
                   name="garages"
                   type="number"
                   defaultValue={editingProperty?.garages}
                 />
-
                 <InputField
                   label="Tipo cochera"
                   name="garage_type"
                   defaultValue={editingProperty?.garage_type}
                 />
-
                 <InputField
                   label="Sup. cubierta"
                   name="covered_area"
                   type="number"
                   defaultValue={editingProperty?.covered_area}
                 />
-
                 <InputField
                   label="Sup. total"
                   name="total_area"
                   type="number"
                   defaultValue={editingProperty?.total_area}
                 />
-
                 <InputField
                   label="Terreno"
                   name="land_area"
                   type="number"
                   defaultValue={editingProperty?.land_area}
                 />
-
                 <InputField
                   label="Antigüedad"
                   name="age_years"
                   type="number"
                   defaultValue={editingProperty?.age_years}
                 />
-
                 <InputField
                   label="Plantas"
                   name="floors_count"
                   type="number"
                   defaultValue={editingProperty?.floors_count}
                 />
-
                 <InputField
                   label="Estado conservación"
                   name="condition"
                   defaultValue={editingProperty?.condition}
                 />
-
                 <InputField
                   label="Eficiencia energética"
                   name="energy_efficiency"
                   defaultValue={editingProperty?.energy_efficiency}
                 />
-
                 <InputField
                   label="Propietario"
                   name="owner_name"
                   defaultValue={editingProperty?.owner_name}
                 />
-
                 <InputField
                   label="Teléfono propietario"
                   name="owner_phone"
@@ -859,20 +1282,17 @@ export default function PropertiesDashboardClient({
                 <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
                   Comodidades y condiciones
                 </p>
-
                 <div className="grid gap-4 md:grid-cols-3">
                   <YesNoField
                     label="Amoblado"
                     name="furnished"
                     defaultValue={editingProperty?.furnished}
                   />
-
                   <YesNoField
                     label="Tiene expensas"
                     name="has_expenses"
                     defaultValue={editingProperty?.has_expenses}
                   />
-
                   <InputField
                     label="Valor expensas"
                     name="expenses"
@@ -880,19 +1300,16 @@ export default function PropertiesDashboardClient({
                     defaultValue={editingProperty?.expenses}
                     placeholder="Ej: 120000"
                   />
-
                   <YesNoField
                     label="Aceptan mascotas"
                     name="accepts_pets"
                     defaultValue={editingProperty?.accepts_pets}
                   />
-
                   <YesNoField
                     label="Aire acondicionado"
                     name="has_air_conditioning"
                     defaultValue={editingProperty?.has_air_conditioning}
                   />
-
                   <SelectField
                     label="Calefacción"
                     name="heating_type"
@@ -912,7 +1329,6 @@ export default function PropertiesDashboardClient({
                   <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     Descripción corta
                   </span>
-
                   <textarea
                     name="short_description"
                     defaultValue={textValue(editingProperty?.short_description)}
@@ -920,12 +1336,10 @@ export default function PropertiesDashboardClient({
                     className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
                   />
                 </label>
-
                 <label>
                   <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     Notas internas
                   </span>
-
                   <textarea
                     name="internal_notes"
                     defaultValue={textValue(editingProperty?.internal_notes)}
@@ -933,12 +1347,10 @@ export default function PropertiesDashboardClient({
                     className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm outline-none transition focus:border-[#D71920] focus:ring-4 focus:ring-[#D71920]/10"
                   />
                 </label>
-
                 <label className="md:col-span-2">
                   <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     Descripción
                   </span>
-
                   <textarea
                     name="description"
                     defaultValue={textValue(editingProperty?.description)}
@@ -952,122 +1364,102 @@ export default function PropertiesDashboardClient({
                 <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
                   Configuración
                 </p>
-
                 <div className="grid gap-3 md:grid-cols-3">
                   <CheckField
                     label="Publicar en web"
                     name="published"
                     defaultChecked={editingProperty?.published}
                   />
-
                   <CheckField
                     label="Destacada"
                     name="featured"
                     defaultChecked={editingProperty?.featured}
                   />
-
                   <CheckField
                     label="Dalvian"
                     name="is_dalvian"
                     defaultChecked={editingProperty?.is_dalvian}
                   />
-
                   <CheckField
                     label="Mostrar dirección"
                     name="show_address"
                     defaultChecked={editingProperty?.show_address}
                   />
-
                   <CheckField
                     label="Barrio privado"
                     name="private_neighborhood"
                     defaultChecked={editingProperty?.private_neighborhood}
                   />
-
                   <CheckField
                     label="Semi Privado"
                     name="semi_private"
                     defaultChecked={editingProperty?.semi_private}
                   />
-
                   <CheckField
                     label="Apto crédito"
                     name="apt_credit"
                     defaultChecked={editingProperty?.apt_credit}
                   />
-
                   <CheckField
                     label="Financiación"
                     name="financing"
                     defaultChecked={editingProperty?.financing}
                   />
-
                   <CheckField
                     label="Permuta"
                     name="accepts_exchange"
                     defaultChecked={editingProperty?.accepts_exchange}
                   />
-
                   <CheckField
                     label="Agua"
                     name="has_water"
                     defaultChecked={editingProperty?.has_water}
                   />
-
                   <CheckField
                     label="Electricidad"
                     name="has_electricity"
                     defaultChecked={editingProperty?.has_electricity}
                   />
-
                   <CheckField
                     label="Gas"
                     name="has_gas"
                     defaultChecked={editingProperty?.has_gas}
                   />
-
                   <CheckField
                     label="Internet"
                     name="has_internet"
                     defaultChecked={editingProperty?.has_internet}
                   />
-
                   <CheckField
                     label="Cocina equipada"
                     name="has_equipped_kitchen"
                     defaultChecked={editingProperty?.has_equipped_kitchen}
                   />
-
                   <CheckField
                     label="Lavandería"
                     name="has_laundry"
                     defaultChecked={editingProperty?.has_laundry}
                   />
-
                   <CheckField
                     label="Chimenea"
                     name="has_fireplace"
                     defaultChecked={editingProperty?.has_fireplace}
                   />
-
                   <CheckField
                     label="Sauna"
                     name="has_sauna"
                     defaultChecked={editingProperty?.has_sauna}
                   />
-
                   <CheckField
                     label="Piscina"
                     name="has_pool"
                     defaultChecked={editingProperty?.has_pool}
                   />
-
                   <CheckField
                     label="Jardín"
                     name="has_garden"
                     defaultChecked={editingProperty?.has_garden}
                   />
-
                   <CheckField
                     label="Churrasquera"
                     name="has_bbq"
@@ -1081,144 +1473,56 @@ export default function PropertiesDashboardClient({
                   <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     Imágenes
                   </span>
-
                   <input
                     name="images"
                     type="file"
                     accept="image/*"
                     multiple
-                    onChange={handleNewImagesChange}
+                    onChange={handleImagesChange}
                     className="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600 file:mr-4 file:rounded-xl file:border-0 file:bg-[#D71920] file:px-4 file:py-2 file:text-sm file:font-bold file:text-white"
                   />
                 </label>
 
-                {visibleExistingImages.length > 0 && (
-                  <div className="mt-4">
-                    <div className="mb-3">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
-                        Imágenes cargadas
-                      </p>
-
-                      <p className="mt-1 text-xs text-slate-500">
-                        Elegí cuál imagen será la portada visible en la
-                        publicación.
-                      </p>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      {visibleExistingImages.map((image) => {
-                        const isSelectedCover = selectedCoverImageId === image.id;
-
-                        return (
-                          <div
-                            key={image.id}
-                            className={`group relative h-28 overflow-hidden rounded-2xl border bg-slate-100 transition ${
-                              isSelectedCover
-                                ? "border-[#D71920] ring-4 ring-[#D71920]/15"
-                                : "border-transparent hover:border-[#D71920]/50"
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedNewCoverIndex(null);
-                                setSelectedCoverImageId(image.id);
-                              }}
-                              className="absolute inset-0 z-10"
-                              title="Usar como portada"
-                            />
-
-                            <Image
-                              src={image.url || ""}
-                              alt="Imagen propiedad"
-                              fill
-                              className="object-cover transition duration-300 group-hover:scale-[1.03]"
-                              sizes="240px"
-                            />
-
-                            <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
-
-                            {isSelectedCover ? (
-                              <span className="absolute left-2 top-2 z-20 rounded-full bg-[#D71920] px-3 py-1.5 text-[10px] font-bold text-white shadow-sm">
-                                Portada
-                              </span>
-                            ) : (
-                              <span className="absolute left-2 top-2 z-20 rounded-full bg-white/95 px-3 py-1.5 text-[10px] font-bold text-[#111111] opacity-0 shadow-sm backdrop-blur transition group-hover:opacity-100">
-                                Usar portada
-                              </span>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => markImageForDelete(image.id)}
-                              className="absolute right-2 top-2 z-30 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-xs font-bold text-white transition hover:bg-[#D71920]"
-                              title="Eliminar imagen"
-                            >
-                              ×
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {selectedFiles.length > 0 && (
-                  <div className="mt-4">
-                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
-                      Imágenes nuevas
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="mb-4 flex flex-col gap-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
+                      Galería de imágenes
                     </p>
-
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      {selectedFiles.map((image) => {
-                        const isRemoved = removedNewImageIndexes.includes(
-                          image.index
-                        );
-
-                        if (isRemoved) return null;
-
-                        const isCover = selectedNewCoverIndex === image.index;
-
-                        return (
-                          <div
-                            key={image.index}
-                            className={`group relative h-28 overflow-hidden rounded-2xl border bg-slate-100 ${
-                              isCover
-                                ? "border-[#D71920] ring-4 ring-[#D71920]/15"
-                                : "border-transparent"
-                            }`}
-                          >
-                            <img
-                              src={image.previewUrl}
-                              alt="Imagen nueva"
-                              className="h-full w-full object-cover"
-                            />
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedCoverImageId(null);
-                                setSelectedNewCoverIndex(image.index);
-                              }}
-                              className="absolute left-2 top-2 rounded-full bg-white/95 px-3 py-1.5 text-[10px] font-bold text-[#111111] shadow-sm transition hover:bg-[#D71920] hover:text-white"
-                            >
-                              {isCover ? "Portada" : "Usar portada"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => removeNewImage(image.index)}
-                              className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-xs font-bold text-white transition hover:bg-[#D71920]"
-                              title="Quitar imagen"
-                            >
-                              ×
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <p className="text-xs leading-5 text-slate-500">
+                      Arrastrá las fotos para definir el orden. También podés
+                      elegir la portada y eliminar las que no quieras.
+                    </p>
                   </div>
-                )}
+
+                  {editableImages.length > 0 ? (
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={handleDragEnd}
+                    >
+                      <SortableContext
+                        items={editableImages.map((image) => image.uid)}
+                        strategy={rectSortingStrategy}
+                      >
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          {editableImages.map((image) => (
+                            <SortableImageCard
+                              key={image.uid}
+                              image={image}
+                              onSetCover={setCoverImage}
+                              onRemove={removeEditableImage}
+                            />
+                          ))}
+                        </div>
+                      </SortableContext>
+                    </DndContext>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                      Todavía no hay imágenes. Seleccioná una o más fotos para
+                      previsualizarlas antes de guardar.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="sticky bottom-0 flex justify-end gap-3 border-t border-slate-200 bg-white py-4">
@@ -1229,12 +1533,88 @@ export default function PropertiesDashboardClient({
                 >
                   Cancelar
                 </button>
-
                 <SubmitButton
                   loadingText={editingProperty ? "Guardando..." : "Creando..."}
                   className="h-10 rounded-2xl bg-[#D71920] px-5 text-sm font-bold text-white shadow-sm transition hover:bg-[#B9151B] disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {editingProperty ? "Guardar cambios" : "Crear propiedad"}
+                </SubmitButton>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {propertyToDuplicate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
+            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#D71920]">
+              Duplicar propiedad
+            </p>
+
+            <h2 className="mt-3 text-xl font-semibold text-[#111111]">
+              Crear una publicación similar
+            </h2>
+
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Copiamos los datos e imágenes de la propiedad original. Solo definí la nueva operación y precio.
+            </p>
+
+            <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+              <p className="text-sm font-semibold text-[#111111]">
+                {propertyToDuplicate.title || "Propiedad sin título"}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {propertyToDuplicate.code || "Sin código"} · {propertyToDuplicate.operation || "Sin operación"} · {formatPrice(propertyToDuplicate.price, propertyToDuplicate.currency)}
+              </p>
+            </div>
+
+            <form action={duplicatePropertyAction} className="mt-5 space-y-4">
+              <input type="hidden" name="source_id" value={propertyToDuplicate.id} />
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <SelectField
+                  label="Nueva operación"
+                  name="operation"
+                  defaultValue={propertyToDuplicate.operation === "Alquiler" ? "Venta" : "Alquiler"}
+                  options={[
+                    { label: "Venta", value: "Venta" },
+                    { label: "Alquiler", value: "Alquiler" },
+                  ]}
+                />
+
+                <SelectField
+                  label="Moneda"
+                  name="currency"
+                  defaultValue={propertyToDuplicate.currency || "USD"}
+                  options={[
+                    { label: "USD", value: "USD" },
+                    { label: "ARS", value: "ARS" },
+                  ]}
+                />
+
+                <InputField label="Nuevo precio" name="price" type="number" placeholder="Ej: 900000" />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <CheckField label="Publicar ahora" name="published" defaultChecked={false} />
+                <CheckField label="Mantener destacada" name="featured" defaultChecked={propertyToDuplicate.featured} />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPropertyToDuplicate(null)}
+                  className="h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920]"
+                >
+                  Cancelar
+                </button>
+
+                <SubmitButton
+                  loadingText="Duplicando..."
+                  className="h-10 rounded-2xl bg-[#D71920] px-4 text-sm font-bold text-white transition hover:bg-[#B9151B] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  Duplicar propiedad
                 </SubmitButton>
               </div>
             </form>
@@ -1248,25 +1628,20 @@ export default function PropertiesDashboardClient({
             <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#D71920]">
               Eliminar propiedad
             </p>
-
             <h2 className="mt-3 text-xl font-semibold text-[#111111]">
               ¿Eliminar esta propiedad?
             </h2>
-
             <p className="mt-2 text-sm leading-6 text-slate-500">
               Esta acción quitará la propiedad del panel y del sitio web.
             </p>
-
             <div className="mt-4 rounded-2xl bg-slate-50 p-4">
               <p className="text-sm font-semibold text-[#111111]">
                 {propertyToDelete.title || "Propiedad sin título"}
               </p>
-
               <p className="mt-1 text-xs text-slate-500">
                 {propertyToDelete.code || "Sin código"}
               </p>
             </div>
-
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
@@ -1275,10 +1650,8 @@ export default function PropertiesDashboardClient({
               >
                 Cancelar
               </button>
-
               <form action={deletePropertyAction}>
                 <input type="hidden" name="id" value={propertyToDelete.id} />
-
                 <SubmitButton
                   loadingText="Eliminando..."
                   className="h-10 rounded-2xl bg-[#D71920] px-4 text-sm font-bold text-white transition hover:bg-[#B9151B] disabled:cursor-not-allowed disabled:opacity-70"

@@ -1,28 +1,40 @@
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import PropertiesDashboardClient, { type Property, type UserRole } from "./PropertiesDashboardClient";
+import PropertiesDashboardClient, {
+  type Property,
+  type UserRole,
+} from "./PropertiesDashboardClient";
 
 export const dynamic = "force-dynamic";
+
+type PageProps = {
+  searchParams?: Promise<{
+    success?: string;
+    error?: string;
+  }>;
+};
 
 function getSuccessMessage(value?: string) {
   if (value === "create") return "Propiedad creada correctamente.";
   if (value === "update") return "Propiedad actualizada correctamente.";
   if (value === "delete") return "Propiedad eliminada correctamente.";
+  if (value === "duplicate") return "Propiedad duplicada correctamente.";
   return null;
 }
 
-function getErrorMessage(value?: string) {
+function getErrorMessage(value?: string, fallback?: string | null) {
+  if (fallback) return fallback;
   if (value === "unauthorized") return "No tenés permisos para realizar esta acción.";
-  if (value === "missing-id") return "No se encontró la propiedad solicitada.";
-  if (value === "save") return "No se pudo guardar la propiedad.";
+  if (value === "missing-id") return "No se encontró el ID de la propiedad.";
+  if (value === "create") return "No se pudo crear la propiedad.";
+  if (value === "update") return "No se pudo actualizar la propiedad.";
   if (value === "delete") return "No se pudo eliminar la propiedad.";
+  if (value === "duplicate") return "No se pudo duplicar la propiedad.";
   return null;
 }
 
 export default async function DashboardPropertiesPage({
   searchParams,
-}: {
-  searchParams?: Promise<{ success?: string; error?: string }>;
-}) {
+}: PageProps) {
   const params = searchParams ? await searchParams : {};
   const supabase = await createSupabaseServerClient();
 
@@ -114,8 +126,8 @@ export default async function DashboardPropertiesPage({
   return (
     <PropertiesDashboardClient
       properties={(properties || []) as Property[]}
-      errorMessage={error?.message || getErrorMessage(params.error)}
-      successMessage={getSuccessMessage(params.success)}
+      errorMessage={getErrorMessage(params?.error, error?.message || null)}
+      successMessage={getSuccessMessage(params?.success)}
       currentUserRole={profile?.role || "user"}
     />
   );

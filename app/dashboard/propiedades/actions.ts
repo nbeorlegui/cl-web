@@ -1,22 +1,32 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-
-const BUCKET = "property-images";
 
 type UserRole = "superadmin" | "admin" | "user";
 
+type ImageOrderItem = {
+  uid: string;
+  kind: "existing" | "new";
+  id: string | null;
+  originalIndex: number | null;
+  position: number;
+  isCover: boolean;
+};
+
 function getString(formData: FormData, key: string) {
   const value = formData.get(key);
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || null;
 }
 
 function getNumber(formData: FormData, key: string) {
   const value = formData.get(key);
-  if (typeof value !== "string" || value.trim() === "") return null;
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
 
-  const number = Number(value);
+  const number = Number(text);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -38,13 +48,20 @@ function slugify(value: string) {
     .replace(/(^-|-$)+/g, "");
 }
 
-function getPropertyPayload(formData: FormData) {
-  const title = getString(formData, "title");
+function getSlug(formData: FormData) {
   const manualSlug = getString(formData, "slug");
+  if (manualSlug) return slugify(manualSlug);
 
+  const title = getString(formData, "title");
+  if (title) return slugify(title);
+
+  return null;
+}
+
+function getPropertyPayload(formData: FormData) {
   return {
-    title,
-    slug: manualSlug || (title ? slugify(title) : null),
+    title: getString(formData, "title"),
+    slug: getSlug(formData),
     description: getString(formData, "description"),
     short_description: getString(formData, "short_description"),
     operation: getString(formData, "operation"),
@@ -102,7 +119,7 @@ function getPropertyPayload(formData: FormData) {
   };
 }
 
-async function getCurrentRole() {
+async function getAuthenticatedProfile() {
   const supabase = await createSupabaseServerClient();
 
   const {
@@ -119,74 +136,134 @@ async function getCurrentRole() {
     .eq("id", user.id)
     .single<{ role: UserRole }>();
 
-  return profile?.role || "user";
+  return { supabase, user, profile };
 }
 
-function canManage(role: UserRole) {
+function canManage(role?: UserRole | null) {
   return role === "superadmin" || role === "admin";
 }
 
 function getImageFiles(formData: FormData) {
   return formData
     .getAll("images")
-    .filter((value): value is File => value instanceof File && value.size > 0);
+    .filter((item): item is File => item instanceof File && item.size > 0);
 }
 
-function getStoragePathFromUrl(url: string | null) {
+function parseImageOrder(formData: FormData): ImageOrderItem[] {
+  const raw = String(formData.get("images_order") || "");
+
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item): ImageOrderItem | null => {
+        if (!item || typeof item !== "object") return null;
+        if (item.kind !== "existing" && item.kind !== "new") return null;
+
+        return {
+          uid: String(item.uid || ""),
+          kind: item.kind,
+          id: item.id ? String(item.id) : null,
+          originalIndex:
+            item.originalIndex === null || item.originalIndex === undefined
+              ? null
+              : Number(item.originalIndex),
+          position: Number(item.position || 0),
+          isCover: Boolean(item.isCover),
+        };
+      })
+      .filter(Boolean) as ImageOrderItem[];
+  } catch {
+    return [];
+  }
+}
+
+function safeFileName(fileName: string) {
+  const extension = fileName.split(".").pop()?.toLowerCase() || "jpg";
+  const base = fileName
+    .replace(/\.[^/.]+$/, "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "")
+    .slice(0, 60);
+
+  return `${base || "imagen"}.${extension}`;
+}
+
+function getStoragePathFromPublicUrl(url: string | null) {
   if (!url) return null;
 
-  const marker = `/storage/v1/object/public/${BUCKET}/`;
-  const markerIndex = url.indexOf(marker);
+  const marker = "/storage/v1/object/public/property-images/";
+  const index = url.indexOf(marker);
 
-  if (markerIndex === -1) return null;
+  if (index === -1) return null;
 
-  const path = url.slice(markerIndex + marker.length);
-  return decodeURIComponent(path.split("?")[0] || "");
+  return decodeURIComponent(url.slice(index + marker.length));
 }
 
-async function uploadImagesForProperty({
+async function deleteImagesFromStorageAndDb(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  propertyId: string,
+  imageIds: string[]
+) {
+  if (!imageIds.length) return;
+
+  const { data: imagesToDelete } = await supabase
+    .from("property_images")
+    .select("id, url")
+    .eq("property_id", propertyId)
+    .in("id", imageIds);
+
+  const paths =
+    imagesToDelete
+      ?.map((image) => getStoragePathFromPublicUrl(image.url))
+      .filter(Boolean) || [];
+
+  if (paths.length > 0) {
+    await supabase.storage.from("property-images").remove(paths as string[]);
+  }
+
+  await supabase
+    .from("property_images")
+    .delete()
+    .eq("property_id", propertyId)
+    .in("id", imageIds);
+}
+
+async function applyImagesOrder({
   supabase,
   propertyId,
   formData,
-  forceNewCover,
 }: {
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   propertyId: string;
   formData: FormData;
-  forceNewCover: boolean;
 }) {
+  const imageOrder = parseImageOrder(formData);
   const files = getImageFiles(formData);
-  const skippedIndexes = formData.getAll("skip_new_image_indexes").map(String);
-  const newCoverIndexRaw = String(formData.get("new_cover_index") || "");
-  const newCoverIndex = newCoverIndexRaw !== "" ? Number(newCoverIndexRaw) : null;
+  const deletedImageIds = formData.getAll("delete_image_ids").map(String);
 
-  if (!files.length) return;
+  await deleteImagesFromStorageAndDb(supabase, propertyId, deletedImageIds);
 
-  const { data: existingImages } = await supabase
-    .from("property_images")
-    .select("position")
-    .eq("property_id", propertyId)
-    .order("position", { ascending: false })
-    .limit(1);
+  const newImageIdByUid = new Map<string, string>();
 
-  let nextPosition = Number(existingImages?.[0]?.position || 0) + 1;
+  for (const item of imageOrder.filter((entry) => entry.kind === "new")) {
+    if (item.originalIndex === null) continue;
 
-  if (forceNewCover || newCoverIndex !== null) {
-    await supabase
-      .from("property_images")
-      .update({ is_cover: false })
-      .eq("property_id", propertyId);
-  }
+    const file = files[item.originalIndex];
+    if (!file) continue;
 
-  for (const [index, file] of files.entries()) {
-    if (skippedIndexes.includes(String(index))) continue;
-
-    const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
-    const fileName = `${Date.now()}-${index}-${slugify(file.name.replace(/\.[^.]+$/, ""))}.${extension}`;
-    const filePath = `${propertyId}/${fileName}`;
+    const filePath = `${propertyId}/${Date.now()}-${item.position}-${safeFileName(
+      file.name
+    )}`;
 
     const { error: uploadError } = await supabase.storage
-      .from(BUCKET)
+      .from("property-images")
       .upload(filePath, file, {
         cacheControl: "3600",
         upsert: false,
@@ -194,209 +271,372 @@ async function uploadImagesForProperty({
       });
 
     if (uploadError) {
-      throw uploadError;
+      console.error("Error uploading property image:", uploadError);
+      continue;
     }
 
     const { data: publicUrlData } = supabase.storage
-      .from(BUCKET)
+      .from("property-images")
       .getPublicUrl(filePath);
 
-    const isCover = newCoverIndex === index || (forceNewCover && index === 0);
-
-    const { error: imageError } = await supabase.from("property_images").insert({
-      property_id: propertyId,
-      url: publicUrlData.publicUrl,
-      is_cover: isCover,
-      position: nextPosition,
-    });
-
-    if (imageError) {
-      throw imageError;
-    }
-
-    nextPosition += 1;
-  }
-}
-
-export async function createPropertyAction(formData: FormData) {
-  const role = await getCurrentRole();
-  const supabase = await createSupabaseServerClient();
-
-  try {
-    const payload = getPropertyPayload(formData);
-
-    const { data: property, error } = await supabase
-      .from("properties")
-      .insert(payload)
+    const { data: insertedImage, error: imageInsertError } = await supabase
+      .from("property_images")
+      .insert({
+        property_id: propertyId,
+        url: publicUrlData.publicUrl,
+        is_cover: false,
+        position: item.position,
+      })
       .select("id")
       .single<{ id: string }>();
 
-    if (error || !property) {
-      throw error || new Error("No se pudo crear la propiedad.");
+    if (imageInsertError) {
+      console.error("Error inserting property image:", imageInsertError);
+      continue;
     }
 
-    await uploadImagesForProperty({
-      supabase,
-      propertyId: property.id,
-      formData,
-      forceNewCover: true,
-    });
-
-    redirect("/dashboard/propiedades?success=create");
-  } catch (error) {
-    console.error("createPropertyAction error:", error);
-    redirect("/dashboard/propiedades?error=save");
+    if (insertedImage?.id) {
+      newImageIdByUid.set(item.uid, insertedImage.id);
+    }
   }
+
+  const finalOrder = imageOrder
+    .map((item) => {
+      if (item.kind === "existing" && item.id) {
+        return {
+          imageId: item.id,
+          position: item.position,
+          isCover: item.isCover,
+        };
+      }
+
+      if (item.kind === "new") {
+        const imageId = newImageIdByUid.get(item.uid);
+        if (!imageId) return null;
+
+        return {
+          imageId,
+          position: item.position,
+          isCover: item.isCover,
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean) as { imageId: string; position: number; isCover: boolean }[];
+
+  if (!finalOrder.length) return;
+
+  const hasSelectedCover = finalOrder.some((image) => image.isCover);
+  const normalizedOrder = finalOrder.map((image, index) => ({
+    ...image,
+    position: index + 1,
+    isCover: hasSelectedCover ? image.isCover : index === 0,
+  }));
+
+  await supabase
+    .from("property_images")
+    .update({ is_cover: false })
+    .eq("property_id", propertyId);
+
+  await Promise.all(
+    normalizedOrder.map((image) =>
+      supabase
+        .from("property_images")
+        .update({
+          position: image.position,
+          is_cover: image.isCover,
+        })
+        .eq("id", image.imageId)
+        .eq("property_id", propertyId)
+    )
+  );
+}
+
+
+function getDuplicatePayload(source: Record<string, unknown>, formData: FormData) {
+  const title = String(source.title || "Propiedad sin título");
+  const operation = getString(formData, "operation") || String(source.operation || "Venta");
+  const price = getNumber(formData, "price");
+  const currency = getString(formData, "currency") || String(source.currency || "USD");
+
+  return {
+    title,
+    slug: `${slugify(title)}-${Date.now()}`,
+    description: source.description ?? null,
+    short_description: source.short_description ?? null,
+    operation,
+    property_type: source.property_type ?? null,
+    status: "activa",
+    price,
+    currency,
+    expenses: source.expenses ?? null,
+    has_expenses: Boolean(source.has_expenses),
+    province: source.province ?? null,
+    city: source.city ?? null,
+    neighborhood: source.neighborhood ?? null,
+    address: source.address ?? null,
+    show_address: Boolean(source.show_address),
+    latitude: source.latitude ?? null,
+    longitude: source.longitude ?? null,
+    bedrooms: source.bedrooms ?? null,
+    bathrooms: source.bathrooms ?? null,
+    rooms: source.rooms ?? null,
+    garages: source.garages ?? null,
+    garage_type: source.garage_type ?? null,
+    covered_area: source.covered_area ?? null,
+    total_area: source.total_area ?? null,
+    land_area: source.land_area ?? null,
+    age_years: source.age_years ?? null,
+    floors_count: source.floors_count ?? null,
+    condition: source.condition ?? null,
+    private_neighborhood: Boolean(source.private_neighborhood),
+    semi_private: Boolean(source.semi_private),
+    apt_credit: Boolean(source.apt_credit),
+    furnished: Boolean(source.furnished),
+    financing: Boolean(source.financing),
+    accepts_exchange: Boolean(source.accepts_exchange),
+    accepts_pets: Boolean(source.accepts_pets),
+    has_water: Boolean(source.has_water),
+    has_electricity: Boolean(source.has_electricity),
+    has_gas: Boolean(source.has_gas),
+    has_internet: Boolean(source.has_internet),
+    energy_efficiency: source.energy_efficiency ?? null,
+    has_equipped_kitchen: Boolean(source.has_equipped_kitchen),
+    has_laundry: Boolean(source.has_laundry),
+    has_air_conditioning: Boolean(source.has_air_conditioning),
+    has_fireplace: Boolean(source.has_fireplace),
+    has_sauna: Boolean(source.has_sauna),
+    heating_type: source.heating_type ?? null,
+    has_pool: Boolean(source.has_pool),
+    has_garden: Boolean(source.has_garden),
+    has_bbq: Boolean(source.has_bbq),
+    published: getBoolean(formData, "published"),
+    featured: getBoolean(formData, "featured"),
+    is_dalvian: Boolean(source.is_dalvian),
+    owner_name: source.owner_name ?? null,
+    owner_phone: source.owner_phone ?? null,
+    internal_notes: source.internal_notes ?? null,
+  };
+}
+
+export async function createPropertyAction(formData: FormData) {
+  const { supabase } = await getAuthenticatedProfile();
+  const payload = getPropertyPayload(formData);
+
+  const { data: property, error } = await supabase
+    .from("properties")
+    .insert(payload)
+    .select("id")
+    .single<{ id: string }>();
+
+  if (error || !property?.id) {
+    console.error("Error creating property:", error);
+    redirect("/dashboard/propiedades?error=create");
+  }
+
+  await applyImagesOrder({ supabase, propertyId: property.id, formData });
+
+  revalidatePath("/");
+  revalidatePath("/dashboard/propiedades");
+  redirect("/dashboard/propiedades?success=create");
 }
 
 export async function updatePropertyAction(formData: FormData) {
-  const role = await getCurrentRole();
+  const { supabase, profile } = await getAuthenticatedProfile();
 
-  if (!canManage(role)) {
+  if (!canManage(profile?.role)) {
     redirect("/dashboard/propiedades?error=unauthorized");
   }
 
-  const supabase = await createSupabaseServerClient();
   const propertyId = String(formData.get("id") || "");
 
   if (!propertyId) {
     redirect("/dashboard/propiedades?error=missing-id");
   }
 
-  try {
-    const payload = getPropertyPayload(formData);
+  const payload = getPropertyPayload(formData);
 
-    const { error } = await supabase
-      .from("properties")
-      .update(payload)
-      .eq("id", propertyId);
+  const { error } = await supabase
+    .from("properties")
+    .update(payload)
+    .eq("id", propertyId);
 
-    if (error) throw error;
-
-    const deleteImageIds = formData.getAll("delete_image_ids").map(String);
-
-    if (deleteImageIds.length > 0) {
-      const { data: imagesToDelete } = await supabase
-        .from("property_images")
-        .select("id, url")
-        .eq("property_id", propertyId)
-        .in("id", deleteImageIds);
-
-      const storagePaths =
-        imagesToDelete
-          ?.map((image) => getStoragePathFromUrl(image.url))
-          .filter((value): value is string => Boolean(value)) || [];
-
-      if (storagePaths.length > 0) {
-        await supabase.storage.from(BUCKET).remove(storagePaths);
-      }
-
-      const { error: deleteImagesError } = await supabase
-        .from("property_images")
-        .delete()
-        .eq("property_id", propertyId)
-        .in("id", deleteImageIds);
-
-      if (deleteImagesError) throw deleteImagesError;
-    }
-
-    const coverImageId = String(formData.get("cover_image_id") || "");
-    const newCoverIndexRaw = String(formData.get("new_cover_index") || "");
-    const hasNewCover = newCoverIndexRaw !== "";
-
-    if (coverImageId) {
-      await supabase
-        .from("property_images")
-        .update({ is_cover: false })
-        .eq("property_id", propertyId);
-
-      await supabase
-        .from("property_images")
-        .update({ is_cover: true })
-        .eq("id", coverImageId)
-        .eq("property_id", propertyId);
-    }
-
-    await uploadImagesForProperty({
-      supabase,
-      propertyId,
-      formData,
-      forceNewCover: hasNewCover,
-    });
-
-    // Si se eliminó la portada y no se eligió otra, dejamos la primera disponible como portada.
-    if (!coverImageId && !hasNewCover) {
-      const { data: currentCover } = await supabase
-        .from("property_images")
-        .select("id")
-        .eq("property_id", propertyId)
-        .eq("is_cover", true)
-        .maybeSingle<{ id: string }>();
-
-      if (!currentCover) {
-        const { data: firstImage } = await supabase
-          .from("property_images")
-          .select("id")
-          .eq("property_id", propertyId)
-          .order("position", { ascending: true })
-          .limit(1)
-          .maybeSingle<{ id: string }>();
-
-        if (firstImage) {
-          await supabase
-            .from("property_images")
-            .update({ is_cover: true })
-            .eq("id", firstImage.id)
-            .eq("property_id", propertyId);
-        }
-      }
-    }
-
-    redirect("/dashboard/propiedades?success=update");
-  } catch (error) {
-    console.error("updatePropertyAction error:", error);
-    redirect("/dashboard/propiedades?error=save");
+  if (error) {
+    console.error("Error updating property:", error);
+    redirect("/dashboard/propiedades?error=update");
   }
+
+  await applyImagesOrder({ supabase, propertyId, formData });
+
+  revalidatePath("/");
+  revalidatePath("/dashboard/propiedades");
+  redirect("/dashboard/propiedades?success=update");
+}
+
+
+export async function duplicatePropertyAction(formData: FormData) {
+  const { supabase, profile } = await getAuthenticatedProfile();
+
+  if (!canManage(profile?.role)) {
+    redirect("/dashboard/propiedades?error=unauthorized");
+  }
+
+  const sourceId = String(formData.get("source_id") || "");
+
+  if (!sourceId) {
+    redirect("/dashboard/propiedades?error=missing-id");
+  }
+
+  const { data: sourceProperty, error: sourceError } = await supabase
+    .from("properties")
+    .select(
+      `
+      title,
+      description,
+      short_description,
+      operation,
+      property_type,
+      status,
+      price,
+      currency,
+      expenses,
+      has_expenses,
+      province,
+      city,
+      neighborhood,
+      address,
+      show_address,
+      latitude,
+      longitude,
+      bedrooms,
+      bathrooms,
+      rooms,
+      garages,
+      garage_type,
+      covered_area,
+      total_area,
+      land_area,
+      age_years,
+      floors_count,
+      condition,
+      private_neighborhood,
+      semi_private,
+      apt_credit,
+      furnished,
+      financing,
+      accepts_exchange,
+      accepts_pets,
+      has_water,
+      has_electricity,
+      has_gas,
+      has_internet,
+      energy_efficiency,
+      has_equipped_kitchen,
+      has_laundry,
+      has_air_conditioning,
+      has_fireplace,
+      has_sauna,
+      heating_type,
+      has_pool,
+      has_garden,
+      has_bbq,
+      published,
+      featured,
+      is_dalvian,
+      owner_name,
+      owner_phone,
+      internal_notes
+    `
+    )
+    .eq("id", sourceId)
+    .single<Record<string, unknown>>();
+
+  if (sourceError || !sourceProperty) {
+    console.error("Error loading source property:", sourceError);
+    redirect("/dashboard/propiedades?error=duplicate");
+  }
+
+  const payload = getDuplicatePayload(sourceProperty, formData);
+
+  const { data: duplicatedProperty, error: duplicateError } = await supabase
+    .from("properties")
+    .insert(payload)
+    .select("id")
+    .single<{ id: string }>();
+
+  if (duplicateError || !duplicatedProperty?.id) {
+    console.error("Error duplicating property:", duplicateError);
+    redirect("/dashboard/propiedades?error=duplicate");
+  }
+
+  const { data: sourceImages, error: sourceImagesError } = await supabase
+    .from("property_images")
+    .select("url, is_cover, position")
+    .eq("property_id", sourceId)
+    .order("position", { ascending: true });
+
+  if (sourceImagesError) {
+    console.error("Error loading source images:", sourceImagesError);
+  }
+
+  if (sourceImages?.length) {
+    const imageRows = sourceImages
+      .filter((image) => image.url)
+      .map((image, index) => ({
+        property_id: duplicatedProperty.id,
+        url: image.url,
+        is_cover: Boolean(image.is_cover) || index === 0,
+        position: index + 1,
+      }));
+
+    if (imageRows.length > 0) {
+      const { error: imagesError } = await supabase
+        .from("property_images")
+        .insert(imageRows);
+
+      if (imagesError) {
+        console.error("Error duplicating images:", imagesError);
+      }
+    }
+  }
+
+  revalidatePath("/");
+  revalidatePath("/dashboard/propiedades");
+  redirect("/dashboard/propiedades?success=duplicate");
 }
 
 export async function deletePropertyAction(formData: FormData) {
-  const role = await getCurrentRole();
+  const { supabase, profile } = await getAuthenticatedProfile();
 
-  if (!canManage(role)) {
+  if (!canManage(profile?.role)) {
     redirect("/dashboard/propiedades?error=unauthorized");
   }
 
-  const supabase = await createSupabaseServerClient();
   const propertyId = String(formData.get("id") || "");
 
   if (!propertyId) {
     redirect("/dashboard/propiedades?error=missing-id");
   }
 
-  try {
-    const { data: images } = await supabase
-      .from("property_images")
-      .select("url")
-      .eq("property_id", propertyId);
+  const { data: propertyImages } = await supabase
+    .from("property_images")
+    .select("id, url")
+    .eq("property_id", propertyId);
 
-    const storagePaths =
-      images
-        ?.map((image) => getStoragePathFromUrl(image.url))
-        .filter((value): value is string => Boolean(value)) || [];
+  const paths =
+    propertyImages
+      ?.map((image) => getStoragePathFromPublicUrl(image.url))
+      .filter(Boolean) || [];
 
-    if (storagePaths.length > 0) {
-      await supabase.storage.from(BUCKET).remove(storagePaths);
-    }
-
-    await supabase.from("property_images").delete().eq("property_id", propertyId);
-
-    const { error } = await supabase.from("properties").delete().eq("id", propertyId);
-
-    if (error) throw error;
-
-    redirect("/dashboard/propiedades?success=delete");
-  } catch (error) {
-    console.error("deletePropertyAction error:", error);
-    redirect("/dashboard/propiedades?error=delete");
+  if (paths.length > 0) {
+    await supabase.storage.from("property-images").remove(paths as string[]);
   }
+
+  await supabase.from("property_images").delete().eq("property_id", propertyId);
+  await supabase.from("properties").delete().eq("id", propertyId);
+
+  revalidatePath("/");
+  revalidatePath("/dashboard/propiedades");
+  redirect("/dashboard/propiedades?success=delete");
 }
