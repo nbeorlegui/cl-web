@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
 import {
@@ -21,9 +22,9 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   createPropertyAction,
   deletePropertyAction,
-  duplicatePropertyAction,
   updatePropertyAction,
 } from "./actions";
+import { createSupabaseBrowserClient } from "@/lib/supabase-client";
 
 export type UserRole = "superadmin" | "admin" | "user";
 
@@ -111,6 +112,8 @@ type EditableImage = {
   url: string;
   isCover: boolean;
   originalIndex?: number;
+  file?: File;
+  uploadedUrl?: string;
 };
 
 const ITEMS_PER_PAGE = 5;
@@ -158,6 +161,21 @@ function getCoverImage(property: Property) {
 function textValue(value: string | number | null | undefined) {
   return value === null || value === undefined ? "" : String(value);
 }
+
+function slugifyFileName(value: string) {
+  const extension = value.split(".").pop()?.toLowerCase() || "jpg";
+  const base = value
+    .replace(/\.[^/.]+$/, "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "")
+    .slice(0, 60);
+
+  return `${base || "imagen"}.${extension}`;
+}
+
 
 function CheckField({
   label,
@@ -381,12 +399,15 @@ export default function PropertiesDashboardClient({
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProperty, setEditingProperty] = useState<Property | null>(null);
   const [propertyToDelete, setPropertyToDelete] = useState<Property | null>(null);
-  const [propertyToDuplicate, setPropertyToDuplicate] = useState<Property | null>(null);
-  const [visibleSuccessMessage, setVisibleSuccessMessage] = useState(successMessage);
   const [editableImages, setEditableImages] = useState<EditableImage[]>([]);
   const [deletedImageIds, setDeletedImageIds] = useState<string[]>([]);
+  const [isSavingProperty, setIsSavingProperty] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [visibleSuccessMessage, setVisibleSuccessMessage] = useState(successMessage);
   const [filters, setFilters] = useState<PropertyFilters>(DEFAULT_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
+
+  const router = useRouter();
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -395,9 +416,6 @@ export default function PropertiesDashboardClient({
       },
     })
   );
-
-  const canManageProperties =
-    currentUserRole === "superadmin" || currentUserRole === "admin";
 
 
   useEffect(() => {
@@ -414,6 +432,9 @@ export default function PropertiesDashboardClient({
 
     return () => window.clearTimeout(timeout);
   }, [successMessage]);
+
+  const canManageProperties =
+    currentUserRole === "superadmin" || currentUserRole === "admin";
 
   const operationOptions = useMemo(() => {
     return Array.from(
@@ -512,6 +533,8 @@ export default function PropertiesDashboardClient({
 
   function openCreateModal() {
     setEditingProperty(null);
+    setFormError(null);
+    setIsSavingProperty(false);
     resetImageState();
     setIsFormOpen(true);
   }
@@ -538,12 +561,16 @@ export default function PropertiesDashboardClient({
     );
 
     setEditableImages(existingEditableImages);
+    setFormError(null);
+    setIsSavingProperty(false);
     setEditingProperty(property);
     setIsFormOpen(true);
   }
 
   function closeFormModal() {
     setEditingProperty(null);
+    setFormError(null);
+    setIsSavingProperty(false);
     resetImageState();
     setIsFormOpen(false);
   }
@@ -551,11 +578,6 @@ export default function PropertiesDashboardClient({
   function openDeleteModal(property: Property) {
     if (!canManageProperties) return;
     setPropertyToDelete(property);
-  }
-
-  function openDuplicateModal(property: Property) {
-    if (!canManageProperties) return;
-    setPropertyToDuplicate(property);
   }
 
   function handleImagesChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -575,6 +597,7 @@ export default function PropertiesDashboardClient({
         kind: "new",
         url: URL.createObjectURL(file),
         originalIndex: index,
+        file,
         isCover: false,
       }));
 
@@ -649,8 +672,122 @@ export default function PropertiesDashboardClient({
       originalIndex: image.originalIndex ?? null,
       position: index + 1,
       isCover: image.isCover,
+      url: image.kind === "existing" ? image.url : image.uploadedUrl || null,
     }))
   );
+
+  async function buildUploadedImagesOrderPayload() {
+    const supabase = createSupabaseBrowserClient();
+
+    const uploadedImages = await Promise.all(
+      editableImages.map(async (image, index) => {
+        if (image.kind === "existing") {
+          return {
+            uid: image.uid,
+            kind: image.kind,
+            id: image.id || null,
+            originalIndex: image.originalIndex ?? null,
+            position: index + 1,
+            isCover: image.isCover,
+            url: image.url,
+          };
+        }
+
+        if (!image.file) {
+          return {
+            uid: image.uid,
+            kind: image.kind,
+            id: null,
+            originalIndex: image.originalIndex ?? null,
+            position: index + 1,
+            isCover: image.isCover,
+            url: image.uploadedUrl || null,
+          };
+        }
+
+        const filePath = `pending/${crypto.randomUUID()}-${slugifyFileName(
+          image.file.name
+        )}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("property-images")
+          .upload(filePath, image.file, {
+            cacheControl: "3600",
+            upsert: false,
+            contentType: image.file.type || "image/jpeg",
+          });
+
+        if (uploadError) {
+          throw new Error(uploadError.message || "No se pudo subir una imagen.");
+        }
+
+        const { data: publicUrlData } = supabase.storage
+          .from("property-images")
+          .getPublicUrl(filePath);
+
+        return {
+          uid: image.uid,
+          kind: image.kind,
+          id: null,
+          originalIndex: image.originalIndex ?? null,
+          position: index + 1,
+          isCover: image.isCover,
+          url: publicUrlData.publicUrl,
+        };
+      })
+    );
+
+    return JSON.stringify(uploadedImages);
+  }
+
+  async function handlePropertyFormSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
+    if (isSavingProperty) return;
+
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const successParam = editingProperty ? "update" : "create";
+
+    setIsSavingProperty(true);
+    setFormError(null);
+
+    try {
+      const uploadedImagesOrder = await buildUploadedImagesOrderPayload();
+      formData.set("images_order", uploadedImagesOrder);
+
+      if (editingProperty) {
+        await updatePropertyAction(formData);
+      } else {
+        await createPropertyAction(formData);
+      }
+
+      closeFormModal();
+      router.replace(`/dashboard/propiedades?success=${successParam}`);
+      router.refresh();
+    } catch (error) {
+      console.error("Error saving property:", error);
+
+      const errorDigest =
+        typeof error === "object" && error && "digest" in error
+          ? String((error as { digest?: unknown }).digest || "")
+          : "";
+
+      if (errorDigest.includes("NEXT_REDIRECT")) {
+        window.location.href = `/dashboard/propiedades?success=${successParam}`;
+        return;
+      }
+
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "No se pudo guardar la propiedad. Intentá nuevamente."
+      );
+      setIsSavingProperty(false);
+    }
+  }
 
   return (
     <section className="w-full">
@@ -677,7 +814,7 @@ export default function PropertiesDashboardClient({
       </div>
 
       {visibleSuccessMessage && (
-        <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 transition-opacity">
+        <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           {visibleSuccessMessage}
         </div>
       )}
@@ -852,7 +989,7 @@ export default function PropertiesDashboardClient({
                 <th className="w-[105px] px-3 py-3">Estado</th>
                 <th className="w-[120px] px-3 py-3">Web</th>
                 {canManageProperties && (
-                  <th className="sticky right-0 z-10 w-[125px] bg-slate-50 px-3 py-3 text-right shadow-[-8px_0_12px_rgba(15,23,42,0.06)]">
+                  <th className="sticky right-0 z-10 w-[95px] bg-slate-50 px-3 py-3 text-right shadow-[-8px_0_12px_rgba(15,23,42,0.06)]">
                     Acciones
                   </th>
                 )}
@@ -921,7 +1058,7 @@ export default function PropertiesDashboardClient({
                       </span>
                     </td>
                     {canManageProperties && (
-                      <td className="sticky right-0 z-10 w-[125px] bg-white px-3 py-3 shadow-[-8px_0_12px_rgba(15,23,42,0.05)]">
+                      <td className="sticky right-0 z-10 w-[95px] bg-white px-3 py-3 shadow-[-8px_0_12px_rgba(15,23,42,0.05)]">
                         <div className="flex justify-end gap-2">
                           <button
                             type="button"
@@ -940,24 +1077,6 @@ export default function PropertiesDashboardClient({
                               <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
                             </svg>
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => openDuplicateModal(property)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920]"
-                            title="Duplicar propiedad"
-                          >
-                            <svg
-                              viewBox="0 0 24 24"
-                              className="h-4 w-4"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                            >
-                              <rect x="9" y="9" width="11" height="11" rx="2" />
-                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                            </svg>
-                          </button>
-
                           <button
                             type="button"
                             onClick={() => openDeleteModal(property)}
@@ -1075,7 +1194,7 @@ export default function PropertiesDashboardClient({
             </div>
 
             <form
-              action={editingProperty ? updatePropertyAction : createPropertyAction}
+              onSubmit={handlePropertyFormSubmit}
               className="space-y-5 p-5"
             >
               {editingProperty && (
@@ -1474,7 +1593,6 @@ export default function PropertiesDashboardClient({
                     Imágenes
                   </span>
                   <input
-                    name="images"
                     type="file"
                     accept="image/*"
                     multiple
@@ -1525,6 +1643,12 @@ export default function PropertiesDashboardClient({
                 </div>
               </div>
 
+              {formError && (
+                <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-[#D71920]">
+                  {formError}
+                </div>
+              )}
+
               <div className="sticky bottom-0 flex justify-end gap-3 border-t border-slate-200 bg-white py-4">
                 <button
                   type="button"
@@ -1533,89 +1657,19 @@ export default function PropertiesDashboardClient({
                 >
                   Cancelar
                 </button>
-                <SubmitButton
-                  loadingText={editingProperty ? "Guardando..." : "Creando..."}
+                <button
+                  type="submit"
+                  disabled={isSavingProperty}
                   className="h-10 rounded-2xl bg-[#D71920] px-5 text-sm font-bold text-white shadow-sm transition hover:bg-[#B9151B] disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {editingProperty ? "Guardar cambios" : "Crear propiedad"}
-                </SubmitButton>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {propertyToDuplicate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#D71920]">
-              Duplicar propiedad
-            </p>
-
-            <h2 className="mt-3 text-xl font-semibold text-[#111111]">
-              Crear una publicación similar
-            </h2>
-
-            <p className="mt-2 text-sm leading-6 text-slate-500">
-              Copiamos los datos e imágenes de la propiedad original. Solo definí la nueva operación y precio.
-            </p>
-
-            <div className="mt-4 rounded-2xl bg-slate-50 p-4">
-              <p className="text-sm font-semibold text-[#111111]">
-                {propertyToDuplicate.title || "Propiedad sin título"}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                {propertyToDuplicate.code || "Sin código"} · {propertyToDuplicate.operation || "Sin operación"} · {formatPrice(propertyToDuplicate.price, propertyToDuplicate.currency)}
-              </p>
-            </div>
-
-            <form action={duplicatePropertyAction} className="mt-5 space-y-4">
-              <input type="hidden" name="source_id" value={propertyToDuplicate.id} />
-
-              <div className="grid gap-4 md:grid-cols-3">
-                <SelectField
-                  label="Nueva operación"
-                  name="operation"
-                  defaultValue={propertyToDuplicate.operation === "Alquiler" ? "Venta" : "Alquiler"}
-                  options={[
-                    { label: "Venta", value: "Venta" },
-                    { label: "Alquiler", value: "Alquiler" },
-                  ]}
-                />
-
-                <SelectField
-                  label="Moneda"
-                  name="currency"
-                  defaultValue={propertyToDuplicate.currency || "USD"}
-                  options={[
-                    { label: "USD", value: "USD" },
-                    { label: "ARS", value: "ARS" },
-                  ]}
-                />
-
-                <InputField label="Nuevo precio" name="price" type="number" placeholder="Ej: 900000" />
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <CheckField label="Publicar ahora" name="published" defaultChecked={false} />
-                <CheckField label="Mantener destacada" name="featured" defaultChecked={propertyToDuplicate.featured} />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setPropertyToDuplicate(null)}
-                  className="h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-[#D71920] hover:text-[#D71920]"
-                >
-                  Cancelar
+                  {isSavingProperty
+                    ? editingProperty
+                      ? "Guardando..."
+                      : "Creando..."
+                    : editingProperty
+                      ? "Guardar cambios"
+                      : "Crear propiedad"}
                 </button>
-
-                <SubmitButton
-                  loadingText="Duplicando..."
-                  className="h-10 rounded-2xl bg-[#D71920] px-4 text-sm font-bold text-white transition hover:bg-[#B9151B] disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  Duplicar propiedad
-                </SubmitButton>
               </div>
             </form>
           </div>

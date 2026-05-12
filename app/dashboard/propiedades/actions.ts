@@ -13,6 +13,7 @@ type ImageOrderItem = {
   originalIndex: number | null;
   position: number;
   isCover: boolean;
+  url: string | null;
 };
 
 function getString(formData: FormData, key: string) {
@@ -173,6 +174,7 @@ function parseImageOrder(formData: FormData): ImageOrderItem[] {
               : Number(item.originalIndex),
           position: Number(item.position || 0),
           isCover: Boolean(item.isCover),
+          url: item.url ? String(item.url) : null,
         };
       })
       .filter(Boolean) as ImageOrderItem[];
@@ -206,6 +208,36 @@ function getStoragePathFromPublicUrl(url: string | null) {
   return decodeURIComponent(url.slice(index + marker.length));
 }
 
+
+async function removeStorageFilesIfUnused(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  urls: string[]
+) {
+  const uniqueUrls = Array.from(new Set(urls.filter(Boolean)));
+
+  if (!uniqueUrls.length) return;
+
+  const { data: remainingImages } = await supabase
+    .from("property_images")
+    .select("url")
+    .in("url", uniqueUrls);
+
+  const remainingUrls = new Set(
+    (remainingImages || [])
+      .map((image) => String(image.url || ""))
+      .filter(Boolean)
+  );
+
+  const paths = uniqueUrls
+    .filter((url) => !remainingUrls.has(url))
+    .map((url) => getStoragePathFromPublicUrl(url))
+    .filter(Boolean) as string[];
+
+  if (paths.length > 0) {
+    await supabase.storage.from("property-images").remove(paths);
+  }
+}
+
 async function deleteImagesFromStorageAndDb(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   propertyId: string,
@@ -219,20 +251,18 @@ async function deleteImagesFromStorageAndDb(
     .eq("property_id", propertyId)
     .in("id", imageIds);
 
-  const paths =
+  const urls =
     imagesToDelete
-      ?.map((image) => getStoragePathFromPublicUrl(image.url))
+      ?.map((image) => String(image.url || ""))
       .filter(Boolean) || [];
-
-  if (paths.length > 0) {
-    await supabase.storage.from("property-images").remove(paths as string[]);
-  }
 
   await supabase
     .from("property_images")
     .delete()
     .eq("property_id", propertyId)
     .in("id", imageIds);
+
+  await removeStorageFilesIfUnused(supabase, urls);
 }
 
 async function applyImagesOrder({
@@ -245,7 +275,6 @@ async function applyImagesOrder({
   formData: FormData;
 }) {
   const imageOrder = parseImageOrder(formData);
-  const files = getImageFiles(formData);
   const deletedImageIds = formData.getAll("delete_image_ids").map(String);
 
   await deleteImagesFromStorageAndDb(supabase, propertyId, deletedImageIds);
@@ -253,37 +282,13 @@ async function applyImagesOrder({
   const newImageIdByUid = new Map<string, string>();
 
   for (const item of imageOrder.filter((entry) => entry.kind === "new")) {
-    if (item.originalIndex === null) continue;
-
-    const file = files[item.originalIndex];
-    if (!file) continue;
-
-    const filePath = `${propertyId}/${Date.now()}-${item.position}-${safeFileName(
-      file.name
-    )}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from("property-images")
-      .upload(filePath, file, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: file.type || "image/jpeg",
-      });
-
-    if (uploadError) {
-      console.error("Error uploading property image:", uploadError);
-      continue;
-    }
-
-    const { data: publicUrlData } = supabase.storage
-      .from("property-images")
-      .getPublicUrl(filePath);
+    if (!item.url) continue;
 
     const { data: insertedImage, error: imageInsertError } = await supabase
       .from("property_images")
       .insert({
         property_id: propertyId,
-        url: publicUrlData.publicUrl,
+        url: item.url,
         is_cover: false,
         position: item.position,
       })
@@ -291,7 +296,7 @@ async function applyImagesOrder({
       .single<{ id: string }>();
 
     if (imageInsertError) {
-      console.error("Error inserting property image:", imageInsertError);
+      console.error("Error inserting uploaded property image:", imageInsertError);
       continue;
     }
 
@@ -352,7 +357,6 @@ async function applyImagesOrder({
     )
   );
 }
-
 
 function getDuplicatePayload(source: Record<string, unknown>, formData: FormData) {
   const title = String(source.title || "Propiedad sin título");
@@ -624,17 +628,15 @@ export async function deletePropertyAction(formData: FormData) {
     .select("id, url")
     .eq("property_id", propertyId);
 
-  const paths =
+  const urls =
     propertyImages
-      ?.map((image) => getStoragePathFromPublicUrl(image.url))
+      ?.map((image) => String(image.url || ""))
       .filter(Boolean) || [];
-
-  if (paths.length > 0) {
-    await supabase.storage.from("property-images").remove(paths as string[]);
-  }
 
   await supabase.from("property_images").delete().eq("property_id", propertyId);
   await supabase.from("properties").delete().eq("id", propertyId);
+
+  await removeStorageFilesIfUnused(supabase, urls);
 
   revalidatePath("/");
   revalidatePath("/dashboard/propiedades");
