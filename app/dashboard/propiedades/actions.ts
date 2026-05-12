@@ -1,13 +1,28 @@
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
-function toNumber(value: FormDataEntryValue | null) {
+type UserRole = "superadmin" | "admin" | "user";
+const IMAGE_BUCKET = "property-images";
+
+function getString(formData: FormData, key: string) {
+  const value = formData.get(key);
+  if (typeof value !== "string") return null;
+  const clean = value.trim();
+  return clean.length ? clean : null;
+}
+
+function getNumber(formData: FormData, key: string) {
+  const value = getString(formData, key);
   if (!value) return null;
-  const numberValue = Number(value);
-  return Number.isNaN(numberValue) ? null : numberValue;
+  const number = Number(value.replace(",", "."));
+  return Number.isFinite(number) ? number : null;
+}
+
+function getBoolean(formData: FormData, key: string) {
+  return formData.get(key) === "on" || formData.get(key) === "true";
 }
 
 function slugify(value: string) {
@@ -19,239 +34,238 @@ function slugify(value: string) {
     .replace(/(^-|-$)+/g, "");
 }
 
-function sanitizeFileName(fileName: string) {
-  const extension = fileName.split(".").pop()?.toLowerCase() || "jpg";
-  const nameWithoutExtension = fileName.replace(/\.[^/.]+$/, "");
-  const safeName = slugify(nameWithoutExtension) || "imagen";
-  return `${safeName}.${extension}`;
+function getPropertyPayload(formData: FormData) {
+  const title = getString(formData, "title") || "Propiedad sin título";
+
+  return {
+    // No enviamos code. Supabase lo genera automáticamente con trigger/sequence.
+    title,
+    slug: getString(formData, "slug") || slugify(title),
+    description: getString(formData, "description"),
+    short_description: getString(formData, "short_description"),
+    operation: getString(formData, "operation"),
+    property_type: getString(formData, "property_type"),
+    status: getString(formData, "status") || "activa",
+    price: getNumber(formData, "price"),
+    currency: getString(formData, "currency") || "USD",
+    expenses: getNumber(formData, "expenses"),
+    has_expenses: getBoolean(formData, "has_expenses"),
+    province: getString(formData, "province"),
+    city: getString(formData, "city"),
+    neighborhood: getString(formData, "neighborhood"),
+    address: getString(formData, "address"),
+    show_address: getBoolean(formData, "show_address"),
+    latitude: getNumber(formData, "latitude"),
+    longitude: getNumber(formData, "longitude"),
+    bedrooms: getNumber(formData, "bedrooms"),
+    bathrooms: getNumber(formData, "bathrooms"),
+    rooms: getNumber(formData, "rooms"),
+    garages: getNumber(formData, "garages"),
+    garage_type: getString(formData, "garage_type"),
+    covered_area: getNumber(formData, "covered_area"),
+    total_area: getNumber(formData, "total_area"),
+    land_area: getNumber(formData, "land_area"),
+    age_years: getNumber(formData, "age_years"),
+    floors_count: getNumber(formData, "floors_count"),
+    condition: getString(formData, "condition"),
+    private_neighborhood: getBoolean(formData, "private_neighborhood"),
+    apt_credit: getBoolean(formData, "apt_credit"),
+    financing: getBoolean(formData, "financing"),
+    accepts_exchange: getBoolean(formData, "accepts_exchange"),
+    accepts_pets: getBoolean(formData, "accepts_pets"),
+    has_water: getBoolean(formData, "has_water"),
+    has_electricity: getBoolean(formData, "has_electricity"),
+    has_gas: getBoolean(formData, "has_gas"),
+    has_internet: getBoolean(formData, "has_internet"),
+    energy_efficiency: getString(formData, "energy_efficiency"),
+    has_equipped_kitchen: getBoolean(formData, "has_equipped_kitchen"),
+    has_laundry: getBoolean(formData, "has_laundry"),
+    has_air_conditioning: getBoolean(formData, "has_air_conditioning"),
+    has_fireplace: getBoolean(formData, "has_fireplace"),
+    has_sauna: getBoolean(formData, "has_sauna"),
+    heating_type: getString(formData, "heating_type"),
+    has_pool: getBoolean(formData, "has_pool"),
+    has_garden: getBoolean(formData, "has_garden"),
+    has_bbq: getBoolean(formData, "has_bbq"),
+    published: getBoolean(formData, "published"),
+    featured: getBoolean(formData, "featured"),
+    is_dalvian: getBoolean(formData, "is_dalvian"),
+    owner_name: getString(formData, "owner_name"),
+    owner_phone: getString(formData, "owner_phone"),
+    internal_notes: getString(formData, "internal_notes"),
+    updated_at: new Date().toISOString(),
+  };
 }
 
-async function requireUser() {
+async function getCurrentUserRole() {
   const supabase = await createSupabaseServerClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  return { supabase, user };
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", user.id)
+    .single<{ role: UserRole }>();
+
+  return { supabase, role: profile?.role || "user" };
 }
 
-function getPropertyPayload(formData: FormData, userId?: string) {
-  const payload = {
-    code: String(formData.get("code") || "").trim() || null,
-    title: String(formData.get("title") || "").trim(),
+function canManageProperties(role: UserRole) {
+  return role === "superadmin" || role === "admin";
+}
 
-    description: String(formData.get("description") || "").trim() || null,
-    short_description:
-      String(formData.get("short_description") || "").trim() || null,
-
-    operation: String(formData.get("operation") || "venta"),
-    property_type: String(formData.get("property_type") || "casa"),
-    is_dalvian: formData.get("is_dalvian") === "on",
-    status: String(formData.get("status") || "activa"),
-
-    price: toNumber(formData.get("price")),
-    currency: String(formData.get("currency") || "USD"),
-    expenses: toNumber(formData.get("expenses")),
-    has_expenses: formData.get("has_expenses") === "on",
-
-    province: String(formData.get("province") || "").trim() || null,
-    city: String(formData.get("city") || "").trim() || null,
-    neighborhood: String(formData.get("neighborhood") || "").trim() || null,
-    address: String(formData.get("address") || "").trim() || null,
-    show_address: formData.get("show_address") === "on",
-    latitude: toNumber(formData.get("latitude")),
-    longitude: toNumber(formData.get("longitude")),
-
-    bedrooms: toNumber(formData.get("bedrooms")),
-    bathrooms: toNumber(formData.get("bathrooms")),
-    rooms: toNumber(formData.get("rooms")),
-    garages: toNumber(formData.get("garages")),
-    garage_type: String(formData.get("garage_type") || "").trim() || null,
-
-    covered_area: toNumber(formData.get("covered_area")),
-    total_area: toNumber(formData.get("total_area")),
-    land_area: toNumber(formData.get("land_area")),
-
-    age_years: toNumber(formData.get("age_years")),
-    floors_count: toNumber(formData.get("floors_count")),
-    condition: String(formData.get("condition") || "").trim() || null,
-
-    private_neighborhood: formData.get("private_neighborhood") === "on",
-    apt_credit: formData.get("apt_credit") === "on",
-    financing: formData.get("financing") === "on",
-    accepts_exchange: formData.get("accepts_exchange") === "on",
-    accepts_pets: formData.get("accepts_pets") === "on",
-
-    has_water: formData.get("has_water") === "on",
-    has_electricity: formData.get("has_electricity") === "on",
-    has_gas: formData.get("has_gas") === "on",
-    has_internet: formData.get("has_internet") === "on",
-
-    energy_efficiency:
-      String(formData.get("energy_efficiency") || "").trim() || null,
-
-    has_equipped_kitchen: formData.get("has_equipped_kitchen") === "on",
-    has_laundry: formData.get("has_laundry") === "on",
-    has_air_conditioning: formData.get("has_air_conditioning") === "on",
-    has_fireplace: formData.get("has_fireplace") === "on",
-    has_sauna: formData.get("has_sauna") === "on",
-    heating_type: String(formData.get("heating_type") || "").trim() || null,
-
-    has_pool: formData.get("has_pool") === "on",
-    has_garden: formData.get("has_garden") === "on",
-    has_bbq: formData.get("has_bbq") === "on",
-
-    published: formData.get("published") === "on",
-    featured: formData.get("featured") === "on",
-
-    owner_name: String(formData.get("owner_name") || "").trim() || null,
-    owner_phone: String(formData.get("owner_phone") || "").trim() || null,
-    internal_notes: String(formData.get("internal_notes") || "").trim() || null,
-  };
-
-  if (userId) {
-    return {
-      ...payload,
-      created_by: userId,
-      assigned_to: userId,
-    };
-  }
-
-  return payload;
+function getFileExtension(file: File) {
+  const fromName = file.name.split(".").pop();
+  if (fromName && fromName !== file.name) return fromName.toLowerCase();
+  if (file.type.includes("png")) return "png";
+  if (file.type.includes("webp")) return "webp";
+  return "jpg";
 }
 
 async function uploadPropertyImages({
+  supabase,
   propertyId,
-  title,
   formData,
-  existingImagesCount = 0,
+  replaceCover,
 }: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   propertyId: string;
-  title: string;
   formData: FormData;
-  existingImagesCount?: number;
+  replaceCover: boolean;
 }) {
-  const { supabase } = await requireUser();
-
-  const imageFiles = formData
+  const files = formData
     .getAll("images")
-    .filter((value): value is File => value instanceof File && value.size > 0);
+    .filter((item): item is File => item instanceof File && item.size > 0);
 
-  const imageRows = [];
+  if (!files.length) return;
 
-  for (let index = 0; index < imageFiles.length; index++) {
-    const file = imageFiles[index];
+  if (replaceCover) {
+    await supabase
+      .from("property_images")
+      .update({ is_cover: false })
+      .eq("property_id", propertyId);
+  }
 
-    if (!file.type.startsWith("image/")) continue;
+  const { count: existingImagesCount } = await supabase
+    .from("property_images")
+    .select("id", { count: "exact", head: true })
+    .eq("property_id", propertyId);
 
-    const safeFileName = sanitizeFileName(file.name);
-    const filePath = `${propertyId}/${Date.now()}-${index}-${safeFileName}`;
+  const basePosition = existingImagesCount || 0;
+  const rows = [];
+
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const extension = getFileExtension(file);
+    const safeName = file.name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9.]+/g, "-")
+      .replace(/(^-|-$)+/g, "");
+
+    const filePath = `${propertyId}/${Date.now()}-${index}-${safeName || `imagen.${extension}`}`;
 
     const { error: uploadError } = await supabase.storage
-      .from("property-images")
+      .from(IMAGE_BUCKET)
       .upload(filePath, file, {
-        cacheControl: "3600",
+        contentType: file.type || `image/${extension}`,
         upsert: false,
-        contentType: file.type,
       });
 
-    if (uploadError) {
-      console.error("Error uploading image:", uploadError);
-      continue;
-    }
+    if (uploadError) throw new Error(uploadError.message);
 
-    const { data: publicUrlData } = supabase.storage
-      .from("property-images")
-      .getPublicUrl(filePath);
+    const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(filePath);
 
-    imageRows.push({
+    rows.push({
       property_id: propertyId,
-      url: publicUrlData.publicUrl,
-      path: filePath,
-      alt: title,
-      position: existingImagesCount + index,
-      is_cover: existingImagesCount === 0 && index === 0,
+      url: data.publicUrl,
+      is_cover: replaceCover && index === 0,
+      position: basePosition + index + 1,
     });
   }
 
-  if (imageRows.length > 0) {
-    const { error: imagesError } = await supabase
-      .from("property_images")
-      .insert(imageRows);
-
-    if (imagesError) console.error("Error saving property images:", imagesError);
+  if (rows.length) {
+    const { error } = await supabase.from("property_images").insert(rows);
+    if (error) throw new Error(error.message);
   }
 }
 
 export async function createPropertyAction(formData: FormData) {
-  const { supabase, user } = await requireUser();
+  const { supabase } = await getCurrentUserRole();
 
-  const title = String(formData.get("title") || "").trim();
-
-  if (!title) redirect("/dashboard/propiedades?error=title");
-
-  const slugBase = slugify(title);
-  const slug = `${slugBase}-${Date.now()}`;
-
-  const { data: property, error: propertyError } = await supabase
+  const { data: property, error } = await supabase
     .from("properties")
-    .insert({
-      ...getPropertyPayload(formData, user.id),
-      slug,
-    })
+    .insert({ ...getPropertyPayload(formData), created_at: new Date().toISOString() })
     .select("id")
-    .single();
+    .single<{ id: string }>();
 
-  if (propertyError || !property) {
-    console.error("Error creating property:", propertyError);
-    redirect("/dashboard/propiedades?error=db");
+  if (error || !property) {
+    redirect(`/dashboard/propiedades?error=${encodeURIComponent(error?.message || "create-error")}`);
   }
 
-  await uploadPropertyImages({
-    propertyId: property.id,
-    title,
-    formData,
-  });
+  await uploadPropertyImages({ supabase, propertyId: property.id, formData, replaceCover: true });
 
-  revalidatePath("/dashboard/propiedades");
   revalidatePath("/");
+  revalidatePath("/propiedades");
+  revalidatePath("/dashboard/propiedades");
   redirect("/dashboard/propiedades?success=create");
 }
 
 export async function updatePropertyAction(formData: FormData) {
-  const { supabase } = await requireUser();
+  const { supabase, role } = await getCurrentUserRole();
+  if (!canManageProperties(role)) redirect("/dashboard/propiedades?error=unauthorized");
 
-  const id = String(formData.get("id") || "").trim();
-  const title = String(formData.get("title") || "").trim();
+  const id = getString(formData, "id");
+  if (!id) redirect("/dashboard/propiedades?error=missing-id");
 
-  if (!id || !title) redirect("/dashboard/propiedades?error=missing");
+  const payload = getPropertyPayload(formData);
+  const { error } = await supabase.from("properties").update(payload).eq("id", id);
+  if (error) redirect(`/dashboard/propiedades?error=${encodeURIComponent(error.message)}`);
 
-  const { error: updateError } = await supabase
-    .from("properties")
-    .update(getPropertyPayload(formData))
-    .eq("id", id);
+  const coverImageId = getString(formData, "cover_image_id");
 
-  if (updateError) {
-    console.error("Error updating property:", updateError);
-    redirect("/dashboard/propiedades?error=update");
+  if (coverImageId) {
+    await supabase
+      .from("property_images")
+      .update({ is_cover: false })
+      .eq("property_id", id);
+
+    await supabase
+      .from("property_images")
+      .update({ is_cover: true })
+      .eq("id", coverImageId)
+      .eq("property_id", id);
   }
 
-  const { count } = await supabase
-    .from("property_images")
-    .select("*", { count: "exact", head: true })
-    .eq("property_id", id);
-
   await uploadPropertyImages({
+    supabase,
     propertyId: id,
-    title,
     formData,
-    existingImagesCount: count || 0,
+    replaceCover: !coverImageId,
   });
 
-  revalidatePath("/dashboard/propiedades");
   revalidatePath("/");
+  revalidatePath("/propiedades");
+  revalidatePath(`/propiedades/${payload.slug}`);
+  revalidatePath("/dashboard/propiedades");
   redirect("/dashboard/propiedades?success=update");
+}
+
+export async function deletePropertyAction(formData: FormData) {
+  const { supabase, role } = await getCurrentUserRole();
+  if (!canManageProperties(role)) redirect("/dashboard/propiedades?error=unauthorized");
+
+  const id = getString(formData, "id");
+  if (!id) redirect("/dashboard/propiedades?error=missing-id");
+
+  await supabase.from("property_images").delete().eq("property_id", id);
+  const { error } = await supabase.from("properties").delete().eq("id", id);
+  if (error) redirect(`/dashboard/propiedades?error=${encodeURIComponent(error.message)}`);
+
+  revalidatePath("/");
+  revalidatePath("/propiedades");
+  revalidatePath("/dashboard/propiedades");
+  redirect("/dashboard/propiedades?success=delete");
 }

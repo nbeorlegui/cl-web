@@ -48,11 +48,7 @@ export default async function NewPropertyPage() {
         </div>
 
         <div className="grid gap-5 md:grid-cols-2">
-          <div>
-            <label className="mb-2 block text-sm font-bold">Código</label>
-            <input name="code" className={inputClass} placeholder="PROP-002" />
-          </div>
-
+          
           <div>
             <label className="mb-2 block text-sm font-bold">Título</label>
             <input
